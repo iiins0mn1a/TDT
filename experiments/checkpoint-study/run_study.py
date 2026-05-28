@@ -109,7 +109,8 @@ def load_study_config(path: str | Path) -> StudyConfig:
 
 
 def install_tdt_imports(study: StudyConfig) -> None:
-    scripts_dir = study.base.tdt_config.parent / "scripts"
+    tdt_root = Path(__file__).resolve().parents[2]
+    scripts_dir = tdt_root / "scripts"
     scripts_dir_str = str(scripts_dir)
     if scripts_dir_str not in sys.path:
         sys.path.insert(0, scripts_dir_str)
