@@ -195,8 +195,6 @@ def _log_relay_thread(stream, log_path: Path) -> None:
             chunk = stream.readline()
             if not chunk:
                 break
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
             handle.write(chunk)
             handle.flush()
 
@@ -322,6 +320,7 @@ def run_interactive_panel(config: TdtConfig) -> None:
     session = launch_shadow_with_panel(config)
     try:
         wait_until_paused(session, timeout_sec=120.0)
+        print(f"Shadow log: {session.log_path}")
         print_panel_help()
         print("Shadow is paused at start. Use c/c10/n/info/cp/restore/r commands here.\n")
 
