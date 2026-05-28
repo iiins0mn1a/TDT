@@ -469,10 +469,14 @@ def run_smoke(config: TdtConfig, interactive: bool) -> None:
         result = subprocess.run(["bash", "-lc", command], cwd=str(config.work_dir))
         exit_code = result.returncode
     else:
+        # Shadow's run-control mode pauses at t=0 waiting for stdin. In
+        # non-interactive smoke runs, continue once so the run can complete
+        # while still capturing all Shadow output in the log file.
         with shadow_log.open("wb") as handle:
             result = subprocess.run(
                 [str(config.shadow_bin), str(shadow_yaml)],
                 cwd=str(config.work_dir),
+                input=b"c\n",
                 stdout=handle,
                 stderr=subprocess.STDOUT,
             )
