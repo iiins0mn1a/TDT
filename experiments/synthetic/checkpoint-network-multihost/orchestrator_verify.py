@@ -188,6 +188,32 @@ def expect_ok(resp: dict, what: str) -> None:
         raise AssertionError(f"{what}: expected status ok, got {resp!r}")
 
 
+def status(session: ShadowSession, timeout_sec: float) -> dict:
+    assert session.sock is not None
+    resp = send_command(session.sock, {"cmd": "status"}, timeout_sec)
+    expect_ok(resp, "status")
+    return resp
+
+
+def is_paused(resp: dict) -> bool:
+    return "sim_waiting=true" in (resp.get("message") or "")
+
+
+def wait_until_paused(session: ShadowSession, timeout_sec: float) -> dict:
+    deadline = time.time() + timeout_sec
+    last: dict | None = None
+    while time.time() < deadline:
+        if session.process.poll() is not None:
+            raise RuntimeError(
+                f"Shadow exited while waiting to pause (code={session.process.returncode})"
+            )
+        last = status(session, min(timeout_sec, 30.0))
+        if is_paused(last):
+            return last
+        time.sleep(0.25)
+    raise TimeoutError(f"timed out waiting for Shadow to pause; last status={last}")
+
+
 def checkpoint_json_path(work_dir: Path, label: str) -> Path:
     return work_dir / "shadow.data" / "checkpoints" / f"{label}.checkpoint.json"
 
@@ -588,6 +614,7 @@ def continue_and_collect(
     assert session.sock is not None
     resp = send_command(session.sock, {"cmd": "continue_for", "duration_ns": duration_ns}, response_timeout)
     expect_ok(resp, label)
+    wait_until_paused(session, max(response_timeout, 300.0))
     return collect_new_events(work_dir, offsets)
 
 
