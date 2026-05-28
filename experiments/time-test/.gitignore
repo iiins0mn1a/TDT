@@ -1,0 +1,5 @@
+# Local build and run output
+time_benchmark
+shadow.data/
+experiment_results/
+*.log

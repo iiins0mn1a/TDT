@@ -1,0 +1,5 @@
+# Local verifier output
+*/run/
+*/run-*/
+*/__pycache__/
+*.pyc
