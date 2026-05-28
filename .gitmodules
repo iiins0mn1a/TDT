@@ -1,0 +1,12 @@
+[submodule "deps/shadow"]
+	path = deps/shadow
+	url = git@github.com:iiins0mn1a/shadow-gen.git
+	branch = spike-network-restore-protocol-rewrite
+[submodule "deps/prysm"]
+	path = deps/prysm
+	url = git@github.com:iiins0mn1a/prysm-ins0.git
+	branch = loki-pos
+[submodule "deps/go-ethereum"]
+	path = deps/go-ethereum
+	url = git@github.com:ethereum/go-ethereum.git
+	branch = master
