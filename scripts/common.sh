@@ -28,12 +28,12 @@ log_error() {
 }
 
 TDT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EVENT_ROOT="$(cd "$TDT_DIR/.." && pwd)"
-REPOS_DIR="$EVENT_ROOT/repos"
+DEPS_DIR="$TDT_DIR/deps"
+REPOS_DIR="$DEPS_DIR"
 ASSETS_DIR="$TDT_DIR/assets"
 DEFAULT_RUNTIME_DIR="$TDT_DIR/runtime"
 
-DEFAULT_SHADOW_BIN="$REPOS_DIR/shadow-gen/build/src/main/shadow"
+DEFAULT_SHADOW_BIN="$REPOS_DIR/shadow/build/src/main/shadow"
 DEFAULT_GETH_BIN="$REPOS_DIR/go-ethereum/build/bin/geth"
 DEFAULT_PRYSMCTL_BIN="$REPOS_DIR/prysm/bazel-bin/cmd/prysmctl/prysmctl_/prysmctl"
 DEFAULT_BEACON_BIN="$REPOS_DIR/prysm/bazel-bin/cmd/beacon-chain/beacon-chain_/beacon-chain"

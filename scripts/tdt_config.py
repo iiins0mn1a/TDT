@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import os
+import shutil
 import tomllib
 
 
@@ -86,13 +87,13 @@ class TdtConfig:
 
     @property
     def criu_bin(self) -> Path:
-        default = Path(
-            os.environ.get(
-                "CRIU_BIN",
-                "/home/ins0/workspace-for-agent/user_data/task/criu_demo/criu-src/criu/criu",
-            )
-        )
-        return _resolve_binary(self.root_dir, self.binaries.criu, default)
+        if self.binaries.criu:
+            return _resolve_path(self.root_dir, self.binaries.criu)
+        if raw := os.environ.get("CRIU_BIN"):
+            return Path(raw).resolve() if Path(raw).is_absolute() else Path(raw)
+        if found := shutil.which("criu"):
+            return Path(found).resolve()
+        return Path("criu")
 
     @property
     def geth_bin(self) -> Path:

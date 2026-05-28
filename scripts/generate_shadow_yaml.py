@@ -32,8 +32,8 @@ def main() -> None:
 
     script_dir = Path(__file__).resolve().parent
     tdt_dir = script_dir.parent
-    event_root = tdt_dir.parent
-    repos_dir = event_root / "repos"
+    deps_dir = tdt_dir / "deps"
+    repos_dir = deps_dir
     runtime_dir = Path(args.runtime_dir).resolve()
     output = Path(args.output).resolve()
 
