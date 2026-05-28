@@ -104,6 +104,12 @@ def generate_shadow_yaml(config: TdtConfig) -> None:
         str(config.work_dir / "shadow.yaml"),
         "--duration-seconds",
         str(config.simulation.duration_seconds),
+        "--geth-bin",
+        str(config.geth_bin),
+        "--beacon-bin",
+        str(config.beacon_bin),
+        "--validator-bin",
+        str(config.validator_bin),
     ]
     run_command(cmd, cwd=config.root_dir)
 

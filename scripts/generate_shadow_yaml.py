@@ -18,6 +18,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--duration-seconds", type=int, default=EXPERIMENT_DURATION_SECONDS)
+    parser.add_argument("--geth-bin", default="")
+    parser.add_argument("--beacon-bin", default="")
+    parser.add_argument("--validator-bin", default="")
     return parser.parse_args()
 
 
@@ -36,6 +39,9 @@ def main() -> None:
     repos_dir = deps_dir
     runtime_dir = Path(args.runtime_dir).resolve()
     output = Path(args.output).resolve()
+    geth_bin = Path(args.geth_bin).resolve() if args.geth_bin else repos_dir / "go-ethereum/build/bin/geth"
+    beacon_bin = Path(args.beacon_bin).resolve() if args.beacon_bin else repos_dir / "prysm/bazel-bin/cmd/beacon-chain/beacon-chain_/beacon-chain"
+    validator_bin = Path(args.validator_bin).resolve() if args.validator_bin else repos_dir / "prysm/bazel-bin/cmd/validator/validator_/validator"
 
     shadow_epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
@@ -69,7 +75,7 @@ hosts:
     network_node_id: 0
     ip_addr: 11.0.2.10
     processes:
-    - path: {repos_dir}/go-ethereum/build/bin/geth
+    - path: {geth_bin}
       args: --networkid=32382 --http --http.api=eth,net,web3 --http.addr=0.0.0.0 --http.corsdomain=\"*\" --http.port=8000 --port=8400 --metrics.port=8300 --ws --ws.api=eth,net,web3 --ws.addr=0.0.0.0 --ws.origins=\"*\" --ws.port=8100 --authrpc.vhosts=\"*\" --authrpc.addr=0.0.0.0 --authrpc.jwtsecret={runtime_dir}/network/node-1/execution/jwtsecret --authrpc.port=8200 --datadir={runtime_dir}/network/node-1/execution --password={runtime_dir}/network/node-1/geth_password.txt --identity=node-0 --maxpendpeers=0 --verbosity=3 --syncmode=full --ipcdisable --nodiscover --maxpeers=0 --nat=none
       start_time: {time_offset + 1}
 """
@@ -91,6 +97,7 @@ hosts:
       args: \"{idx} {rpc_port} {http_port} {tcp_port} {udp_port} {mon_port}\"
       environment:
         TDT_RUNTIME_DIR: \"{runtime_dir}\"
+        TDT_BEACON_BIN: \"{beacon_bin}\"
       start_time: {beacon_start}
       shutdown_time: {stop_time_seconds - 1}
       shutdown_signal: SIGKILL
@@ -113,7 +120,7 @@ hosts:
     network_node_id: 0
     ip_addr: {validator_ip}
     processes:
-    - path: {repos_dir}/prysm/bazel-bin/cmd/validator/validator_/validator
+    - path: {validator_bin}
       args: --beacon-rpc-provider={beacon_ip}:{beacon_rpc_port} --datadir={node_dir}/consensus/validatordata --accept-terms-of-use --interop-num-validators={count} --interop-start-index={start_index} --rpc-port=7000 --grpc-gateway-port=7100 --monitoring-port=7200 --graffiti=\"node-{idx - 1}\" --chain-config-file={node_dir}/consensus/config.yml
       environment:
         SPEC_LOG_NODE: \"node-{idx}\"
