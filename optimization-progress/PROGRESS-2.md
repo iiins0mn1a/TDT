@@ -359,3 +359,15 @@
 - 新观测值：setup1 `continue_plugin` 总计 4669.04ms，其中 receive=4119.65ms、send=523.25ms、prepare=10.08ms；prepare 内部 runahead=2.42ms、clock state=1.59ms、unlock=1.69ms。
 - 结论：prepare 子项不是当前性能主矛盾，至少在 setup1 上只占 `continue_plugin` 的约 0.2%。本次观测没有发现值得立即压缩的同步 prepare 热点。
 - 阶段停止点：不继续展开新路线。若之后恢复 goal，优先回到两个主判断：一是显式 safepoint 状态机是否能让 async continuation 与 CP/restore 共存；二是 setup4/8 上是否存在与 setup1 不同的同步模拟层热点。
+
+## 2026-05-29 恢复后第一步：prepare split 扩展到 setup4/8
+- 主矛盾复述：目标仍是在不改变应用层配置、不破坏真实客户端 CP/restore determinism 的前提下压缩模拟层关键路径。当前需要先证明热点在哪里，而不是继续白名单式 async 试错。
+- 本轮只读 subagent 分工：Bacon 分析 Shadow managed-thread/worker 调度路径；Hooke 分析 TDT perf report 的 setup scaling 指标。主 session 保留最终路线判断。
+- 主线实验：运行 `/tmp/tdt-prepare-split-scale-performance`，`--setups 4,8 --trials 1 --perf-counters on`，结果 passed=true。
+- setup4 新观测：steady=37.64x，checkpoint=122.16ms，restore=207.47ms；`continue_plugin`=9000.76ms，receive=6888.47ms，send=2012.54ms，prepare=39.06ms，其中 runahead=8.95ms、clock_state=6.06ms、unlock=6.09ms。
+- setup8 新观测：steady=31.26x，checkpoint=161.01ms，restore=401.13ms；`continue_plugin`=18055.60ms，receive=12973.10ms，send=4834.63ms，prepare=98.47ms，其中 runahead=22.60ms、clock_state=14.69ms、unlock=14.55ms。
+- 结论更新：prepare 在 setup4/8 仍不是主热点。setup8 中 prepare 约占 `continue_plugin` 的 0.55%，远小于 receive 和 send；因此不应继续围绕 runahead/clock_state/unlock 做实现优化。
+- Hooke 的指标判断：setup 扩大后的吞吐下降最贴近 managed continue/syscall wake 路径放大；`CP+restore wall %` 只有约 4%-6%，event queue 平均 lock ns 没随规模升高，暂时不是主因。
+- Bacon 的低风险候选：既有 `SHADOW_PACKET_ROUTE_CACHE` 是只读派生路由缓存，理论上不改变事件时间和顺序；全量 host scan 和 async scope drain 二次扫描也可疑，但实现风险高于先做 route-cache A/B。
+- 下一步候选：route-cache A/B，最小实验是 setup4/8、trials=1，对比 `/tmp/tdt-prepare-split-scale-performance` 的 packet/local/syscall/steady 指标，并保持 determinism 通过。
+- 执行边界：尝试运行 route-cache A/B 时被执行审批拒绝，理由是超过上一阶段“收尾暂停”的授权边界。为避免绕过审批，本轮没有用其它方式继续跑该实验。后续需要明确授权后再执行。
