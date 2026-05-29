@@ -410,3 +410,10 @@
 - setup1 新样本：host_continue=5223.43ms，handler+continue=5221.58ms，residual=1.85ms，占 0.04%。
 - setup8 既有样本重算：host_continue=20569.60ms，handler=1884.96ms，continue=18320.82ms，handler+continue=20205.78ms，residual=363.83ms，占 1.77%。
 - 结论：`host_continue` 不是新的大黑盒；绝大部分可解释为 syscall handler + syscall continue。真正主热点继续收敛到 `syscall_continue` / managed continuation，尤其是 native thread 从 Shadow 回复后跑到下一次 syscall/yield 的时间。
+
+## 2026-05-29 外部资料复核：方向仍是 safepoint/overlap，不是微优化
+- 查阅方向：Shadow 官方设计说明、保守并行离散事件仿真 lookahead/同步开销相关论文与综述。
+- 资料结论：Shadow 的混合仿真/仿真架构本质上直接运行真实 Linux 进程，并通过 shim/control channel 与离散事件仿真交互；这与我们测到的 `continue_plugin_receive` 包含 native thread 跑到下一 syscall/yield 的时间一致。
+- PDES 资料共识：保守并行仿真的性能主要受 lookahead、同步开销、LP 间通信/调度结构影响；没有额外 lookahead 或 rollback 时，微调单个本地函数通常不能改变并行度上限。
+- 与本地证据对齐：route-cache、host scan、condition lookup/check、prepare 都已被降级；剩下的大头是 continuation 边界本身。
+- 下一步路线：如果继续追求性能，应该围绕显式 safepoint/overlap 状态机建模，而不是继续做 syscall 白名单调参或 C/Rust 小函数微优化。任何 async/overlap 实验必须满足 pause/checkpoint 前 pending continuation drained 的硬语义。
