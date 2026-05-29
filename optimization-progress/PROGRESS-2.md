@@ -371,3 +371,23 @@
 - Bacon 的低风险候选：既有 `SHADOW_PACKET_ROUTE_CACHE` 是只读派生路由缓存，理论上不改变事件时间和顺序；全量 host scan 和 async scope drain 二次扫描也可疑，但实现风险高于先做 route-cache A/B。
 - 下一步候选：route-cache A/B，最小实验是 setup4/8、trials=1，对比 `/tmp/tdt-prepare-split-scale-performance` 的 packet/local/syscall/steady 指标，并保持 determinism 通过。
 - 执行边界：尝试运行 route-cache A/B 时被执行审批拒绝，理由是超过上一阶段“收尾暂停”的授权边界。为避免绕过审批，本轮没有用其它方式继续跑该实验。后续需要明确授权后再执行。
+
+## 2026-05-29 route-cache A/B：安全但不是新主优化点
+- 本轮主实验：验证 `SHADOW_PACKET_ROUTE_CACHE=1` 是否能解释 setup8 的 packet/relay 放大。该开关只缓存 `route_endpoints + routing_info.path()` 派生的 `PacketRoute`，理论上不改变 packet delivery 时间、事件顺序或 RNG 抽样。
+- 先跑无效 A/B：`/tmp/tdt-route-cache-scale-performance` 和 `/tmp/tdt-route-cache-ab-on-setup8-t2` 都 passed=true，但随后发现 `tdt_config.py` 中 `packet_route_cache` 默认就是 true，`tdt_config.local.toml` 没覆盖该字段，所以普通 base 已经启用了 route cache。
+- 日志确认：默认 base 和显式 env-on 的 performance.log 都有 `Built packet route cache with 289 entries`，说明它们不是 off/on 对比。
+- 为做有效对比，临时创建 `tdt_config.route_cache_off.local.toml`，只把 `packet_route_cache=false`，其它真实客户端配置保持一致；实验后已删除该临时文件，未提交。
+- 有效 off 结果：`/tmp/tdt-route-cache-ab-off-setup8-t2` passed=true。setup8 steady=30.07x，elapsed=24.68s，managed_continue=18159.81ms，receive=13014.81ms。
+- 默认 on 结果：`/tmp/tdt-route-cache-ab-base-setup8-t2` passed=true。setup8 steady=30.28x，elapsed=24.53s，managed_continue=17930.65ms，receive=12681.54ms。
+- 有效 A/B 差异：route-cache on 相对 off，setup8 steady +0.68%，elapsed -0.61%，managed_continue -1.26%，receive -2.56%。这些变化低于先前估计的约 5% setup8 噪声阈值。
+- 语义结论：route cache 是安全的派生缓存，CP/restore 后由新 Manager 重建，不需要 checkpoint 新状态；但它已经是当前 TDT 默认基线的一部分，且收益很小，不能作为新优化成果。
+- 路线决策：停止 route-cache 路线。下一候选应回到更能解释 scaling 的 scheduler/host 扫描和 managed continue safepoint 结构；但任何实现前需要先加更直接的 host scan / pending-host 分布计数，避免再靠大粒度 wall time 猜测。
+
+## 2026-05-29 host scan 降级与 syscall wake residual 方向
+- 复核 host scan：现有 perf JSON 已有 `scheduler_host_scans`、`scheduler_host_executes` 和 `scheduler_host_scans_per_execute`，不需要先加新计数。
+- 结果：`/tmp/tdt-prepare-split-scale-performance` 中 setup4 scans/execute=1.151，setup8 scans/execute=1.146；`/tmp/tdt-inline-final-default-suite/performance` 中 setup1=1.374、setup4=1.151、setup8=1.147。
+- 判断：setup8 的 host scan per execute 并没有比 setup1/setup4 更差，不能解释 setup 扩大后吞吐下降。全量 host scan 暂时降级，不进入实现。
+- 当前剩余主热点：`scheduler_syscall_condition_wake_wall_ms` 与 `managed_continue_plugin_wall_ms` 仍随 setup 放大。setup8 典型值约为 syscall wake 20s、managed continue 18s，说明大部分 wake wall 是继续 native thread 到下一次 syscall/yield 的时间，但仍有 residual 需要拆分。
+- 本地代码定位：`SyscallConditionWake` task 由 `src/main/host/syscall/syscall_condition.c` 的 `_syscallcondition_scheduleWakeupTask()` 创建，触发后 `_syscallcondition_trigger()` 检查 process/thread/condition satisfied，然后调用 `host_continue(host, pid, tid)`；Rust 侧 task descriptor 在 `src/main/core/work/task.rs`，host 统计归类在 `src/main/host/host.rs`。
+- 下一步不应直接优化：`host_continue`/`continue_plugin` 是语义核心，之前 async 白名单已经证明容易破坏 determinism 或 CP/restore。继续动它前需要更明确的 safepoint 状态机。
+- 下一步应做的最小观测：把 syscall-condition wake wall 拆成 condition trigger/check 部分与 host_continue 部分，或者在 report 中先估算 syscall wake residual，确认 residual 是否足够大。只有 residual 稳定显著，才考虑 C/Rust 边界的小优化；否则继续回到 safepoint 设计。
