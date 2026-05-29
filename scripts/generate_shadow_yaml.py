@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 EXPERIMENT_DURATION_SECONDS = 1800
-NETWORK_LATENCY_MS = 100
+NETWORK_LATENCY = "100 ms"
 NETWORK_BANDWIDTH = "1000 Gbit"
 
 
@@ -48,11 +49,83 @@ def main() -> None:
     time_offset = int((now - shadow_epoch).total_seconds())
     last_validator_start = time_offset + 11 + (args.nodes - 1) * 7
     stop_time_seconds = last_validator_start + args.duration_seconds
+    shadow_parallelism = os.environ.get("TDT_SHADOW_PARALLELISM", "").strip()
+    if shadow_parallelism:
+        try:
+            shadow_parallelism_value = int(shadow_parallelism)
+        except ValueError as e:
+            raise SystemExit("TDT_SHADOW_PARALLELISM must be an integer") from e
+        if shadow_parallelism_value < 0:
+            raise SystemExit("TDT_SHADOW_PARALLELISM must be >= 0")
+        shadow_parallelism_line = f"  parallelism: {shadow_parallelism_value}\n"
+    else:
+        shadow_parallelism_line = ""
+    shadow_heartbeat_interval = os.environ.get(
+        "TDT_SHADOW_HEARTBEAT_INTERVAL", "1 sec"
+    ).strip()
+    if not shadow_heartbeat_interval:
+        raise SystemExit("TDT_SHADOW_HEARTBEAT_INTERVAL must not be empty")
+    network_latency = os.environ.get("TDT_NETWORK_LATENCY", NETWORK_LATENCY).strip()
+    if not network_latency:
+        raise SystemExit("TDT_NETWORK_LATENCY must not be empty")
+    worker_spinning = os.environ.get("TDT_SHADOW_USE_WORKER_SPINNING", "").strip().lower()
+    cpu_pinning = os.environ.get("TDT_SHADOW_USE_CPU_PINNING", "").strip().lower()
+
+    def parse_bool_env(raw: str, name: str) -> bool | None:
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        if raw == "":
+            return None
+        raise SystemExit(f"{name} must be a boolean")
+
+    worker_spinning_value = parse_bool_env(
+        worker_spinning, "TDT_SHADOW_USE_WORKER_SPINNING"
+    )
+    cpu_pinning_value = parse_bool_env(cpu_pinning, "TDT_SHADOW_USE_CPU_PINNING")
+    experimental_lines = []
+    if worker_spinning_value is not None:
+        experimental_lines.append(
+            f"  use_worker_spinning: {str(worker_spinning_value).lower()}"
+        )
+    if cpu_pinning_value is not None:
+        experimental_lines.append(
+            f"  use_cpu_pinning: {str(cpu_pinning_value).lower()}"
+        )
+    native_preemption = os.environ.get("TDT_NATIVE_PREEMPTION", "").strip().lower()
+    if native_preemption in {"1", "true", "yes", "on"}:
+        native_interval = os.environ.get(
+            "TDT_NATIVE_PREEMPTION_NATIVE_INTERVAL", "100 ms"
+        ).strip()
+        sim_interval = os.environ.get(
+            "TDT_NATIVE_PREEMPTION_SIM_INTERVAL", "10 ms"
+        ).strip()
+        if not native_interval:
+            raise SystemExit("TDT_NATIVE_PREEMPTION_NATIVE_INTERVAL must not be empty")
+        if not sim_interval:
+            raise SystemExit("TDT_NATIVE_PREEMPTION_SIM_INTERVAL must not be empty")
+        preemption_lines = [
+            "  native_preemption_enabled: true",
+            f"  native_preemption_native_interval: {native_interval}",
+            f"  native_preemption_sim_interval: {sim_interval}",
+        ]
+        experimental_lines.extend(preemption_lines)
+    elif native_preemption in {"", "0", "false", "no", "off"}:
+        pass
+    else:
+        raise SystemExit("TDT_NATIVE_PREEMPTION must be a boolean")
+
+    if experimental_lines:
+        experimental_block = "experimental:\n" + "\n".join(experimental_lines) + "\n"
+    else:
+        experimental_block = ""
 
     def header() -> str:
         return f"""general:
   stop_time: {stop_time_seconds}
-network:
+  heartbeat_interval: {shadow_heartbeat_interval}
+{shadow_parallelism_line}network:
   graph:
     type: gml
     inline: |
@@ -66,11 +139,11 @@ network:
         edge [
           source 0
           target 0
-          latency \"{NETWORK_LATENCY_MS} ms\"
+          latency \"{network_latency}\"
           packet_loss 0.0
         ]
       ]
-hosts:
+{experimental_block}hosts:
   geth-node:
     network_node_id: 0
     ip_addr: 11.0.2.10
@@ -143,6 +216,7 @@ hosts:
     print(f"time_offset={time_offset}")
     print(f"last_validator_start={last_validator_start}")
     print(f"stop_time={stop_time_seconds}")
+    print(f"network_latency={network_latency}")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,31 @@ def run_command(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | N
 
 
 def generate_shadow_yaml(config: TdtConfig) -> None:
+    env = os.environ.copy()
+    if config.simulation.shadow_parallelism is not None:
+        env.setdefault("TDT_SHADOW_PARALLELISM", str(config.simulation.shadow_parallelism))
+    env.setdefault(
+        "TDT_SHADOW_HEARTBEAT_INTERVAL", config.simulation.shadow_heartbeat_interval
+    )
+    env.setdefault(
+        "TDT_SHADOW_USE_WORKER_SPINNING",
+        "1" if config.simulation.shadow_use_worker_spinning else "0",
+    )
+    env.setdefault(
+        "TDT_SHADOW_USE_CPU_PINNING",
+        "1" if config.simulation.shadow_use_cpu_pinning else "0",
+    )
+    env.setdefault("TDT_NETWORK_LATENCY", config.simulation.network_latency)
+    if config.simulation.native_preemption_enabled:
+        env.setdefault("TDT_NATIVE_PREEMPTION", "1")
+        env.setdefault(
+            "TDT_NATIVE_PREEMPTION_NATIVE_INTERVAL",
+            config.simulation.native_preemption_native_interval,
+        )
+        env.setdefault(
+            "TDT_NATIVE_PREEMPTION_SIM_INTERVAL",
+            config.simulation.native_preemption_sim_interval,
+        )
     cmd = [
         sys.executable,
         str(resolve_script(config, "generate_shadow_yaml.py")),
@@ -111,7 +136,7 @@ def generate_shadow_yaml(config: TdtConfig) -> None:
         "--validator-bin",
         str(config.validator_bin),
     ]
-    run_command(cmd, cwd=config.root_dir)
+    run_command(cmd, cwd=config.root_dir, env=env)
 
 
 def generate_consensus_genesis(config: TdtConfig) -> None:
@@ -208,6 +233,14 @@ def launch_shadow_with_panel(config: TdtConfig) -> ShadowPanelSession:
     env["SHADOW_CONTROL_SOCKET"] = str(socket_path)
     env["CRIU_BIN"] = str(config.criu_bin)
     env["SHADOW_RESTORE_PROTOCOL_MODE"] = config.checkpoint_restore.restore_protocol_mode
+    if config.simulation.packet_route_cache:
+        env.setdefault("SHADOW_PACKET_ROUTE_CACHE", "1")
+    if config.simulation.fast_file_sync:
+        env.setdefault("SHADOW_FAST_FILE_SYNC", "1")
+    if config.checkpoint_restore.checkpoint_criu_jobs > 0:
+        env.setdefault(
+            "SHADOW_CHECKPOINT_CRIU_JOBS", str(config.checkpoint_restore.checkpoint_criu_jobs)
+        )
     process = subprocess.Popen(
         [str(config.shadow_bin), str(config.work_dir / "shadow.yaml")],
         cwd=str(config.work_dir),

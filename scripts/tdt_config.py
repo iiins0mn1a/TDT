@@ -23,6 +23,16 @@ class SimulationConfig:
     clean_runtime_before_prepare: bool = True
     work_dir: str = "runtime"
     duration_seconds: int = 1800
+    shadow_parallelism: int | None = 6
+    shadow_heartbeat_interval: str = "1 sec"
+    shadow_use_worker_spinning: bool = True
+    shadow_use_cpu_pinning: bool = True
+    network_latency: str = "100 ms"
+    packet_route_cache: bool = True
+    fast_file_sync: bool = True
+    native_preemption_enabled: bool = False
+    native_preemption_native_interval: str = "100 ms"
+    native_preemption_sim_interval: str = "10 ms"
 
 
 @dataclass
@@ -32,6 +42,7 @@ class CheckpointRestoreConfig:
     post_checkpoint_seconds: int = 120
     post_restore_step_seconds: int = 60
     post_restore_steps: int = 6
+    checkpoint_criu_jobs: int = 32
     restore_protocol_mode: str = "deterministic_v2"
     managed_external_paths: list[str] = field(
         default_factory=lambda: ["network", "beacon_peers.txt"]
@@ -180,8 +191,22 @@ def load_tdt_config(config_path: str | Path) -> TdtConfig:
         raise ValueError("validators_total must be >= 0")
     if simulation.default_mode not in {"smoke", "cprestore"}:
         raise ValueError("simulation.default_mode must be 'smoke' or 'cprestore'")
+    if simulation.duration_seconds <= 0:
+        raise ValueError("duration_seconds must be > 0")
+    if simulation.shadow_parallelism is not None and simulation.shadow_parallelism < 0:
+        raise ValueError("shadow_parallelism must be >= 0")
+    if not simulation.shadow_heartbeat_interval.strip():
+        raise ValueError("shadow_heartbeat_interval must not be empty")
+    if not simulation.network_latency.strip():
+        raise ValueError("network_latency must not be empty")
+    if not simulation.native_preemption_native_interval.strip():
+        raise ValueError("native_preemption_native_interval must not be empty")
+    if not simulation.native_preemption_sim_interval.strip():
+        raise ValueError("native_preemption_sim_interval must not be empty")
     if checkpoint_restore.post_restore_steps < 1:
         raise ValueError("post_restore_steps must be >= 1")
+    if checkpoint_restore.checkpoint_criu_jobs < 0:
+        raise ValueError("checkpoint_criu_jobs must be >= 0")
     if not checkpoint_restore.managed_external_paths:
         raise ValueError("managed_external_paths must not be empty")
 

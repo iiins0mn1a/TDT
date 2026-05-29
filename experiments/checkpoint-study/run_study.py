@@ -155,6 +155,14 @@ def launch_shadow(config, log_path: Path, restore_protocol_mode: str) -> ShadowS
     env["SHADOW_CONTROL_SOCKET"] = str(socket_path)
     env["CRIU_BIN"] = str(config.criu_bin)
     env["SHADOW_RESTORE_PROTOCOL_MODE"] = restore_protocol_mode
+    if config.simulation.packet_route_cache:
+        env.setdefault("SHADOW_PACKET_ROUTE_CACHE", "1")
+    if config.simulation.fast_file_sync:
+        env.setdefault("SHADOW_FAST_FILE_SYNC", "1")
+    if config.checkpoint_restore.checkpoint_criu_jobs > 0:
+        env.setdefault(
+            "SHADOW_CHECKPOINT_CRIU_JOBS", str(config.checkpoint_restore.checkpoint_criu_jobs)
+        )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     handle = log_path.open("wb")
     process = subprocess.Popen(
@@ -232,12 +240,28 @@ def is_paused(status_resp: dict) -> bool:
     return "sim_waiting=true" in (status_resp.get("message") or "")
 
 
-def wait_until_paused(session: ShadowSession, timeout_sec: float = 300.0) -> dict:
+def wait_until_paused(
+    session: ShadowSession,
+    timeout_sec: float = 300.0,
+    min_sim_time_ns: int | None = None,
+) -> dict:
+    if min_sim_time_ns is None:
+        try:
+            resp = send_command(session, {"cmd": "wait_until_paused"}, timeout_sec=timeout_sec)
+            if resp.get("status") == "ok":
+                return resp
+        except (ConnectionError, TimeoutError):
+            raise
+        except Exception:
+            # Older Shadow builds don't support the blocking wait command.
+            pass
+
     deadline = time.time() + timeout_sec
     last = None
     while time.time() < deadline:
         last = status(session)
-        if is_paused(last):
+        sim_time_ns = int(last.get("sim_time_ns") or 0)
+        if is_paused(last) and (min_sim_time_ns is None or sim_time_ns >= min_sim_time_ns):
             return last
         if session.process.poll() is not None:
             raise RuntimeError(f"Shadow exited while waiting to pause (code={session.process.returncode})")
@@ -246,13 +270,19 @@ def wait_until_paused(session: ShadowSession, timeout_sec: float = 300.0) -> dic
 
 
 def continue_for(session: ShadowSession, duration_seconds: int) -> None:
+    before = status(session)
+    start_sim_time_ns = int(before.get("sim_time_ns") or 0)
     resp = send_command(
         session,
         {"cmd": "continue_for", "duration_ns": duration_seconds * 1_000_000_000},
         timeout_sec=30.0,
     )
     expect_ok(resp, f"continue_for({duration_seconds}s)")
-    wait_until_paused(session, timeout_sec=max(duration_seconds + 180.0, 300.0))
+    wait_until_paused(
+        session,
+        timeout_sec=max(duration_seconds + 180.0, 300.0),
+        min_sim_time_ns=start_sim_time_ns + duration_seconds * 1_000_000_000,
+    )
 
 
 def restore_with_reconnect(session: ShadowSession, label: str) -> None:
@@ -323,7 +353,80 @@ def snapshot_offsets(runtime_dir: Path) -> dict[str, dict[str, int]]:
     return offsets
 
 
-def capture_window(runtime_dir: Path, offsets: dict[str, dict[str, int]], normalize_hex: bool) -> dict[str, SliceSnapshot]:
+def snapshot_prefixes(
+    runtime_dir: Path,
+    offsets: dict[str, dict[str, int]],
+) -> dict[str, dict[str, bytes]]:
+    hosts_dir = runtime_dir / "shadow.data" / "hosts"
+    prefixes: dict[str, dict[str, bytes]] = {}
+    if not hosts_dir.exists():
+        return prefixes
+    for host_dir in sorted(p for p in hosts_dir.iterdir() if p.is_dir()):
+        role = role_for_host(host_dir.name)
+        if role is None:
+            continue
+        host_offsets = offsets.get(host_dir.name, {})
+        host_prefixes = {"stderr": b"", "stdout": b""}
+        for path in primary_log_files(host_dir, role):
+            current_bytes = path.read_bytes()
+            old_size = min(host_offsets.get(str(path.resolve()), 0), len(current_bytes))
+            stream = "stderr" if path.name.endswith(".stderr") else "stdout"
+            host_prefixes[stream] += current_bytes[:old_size]
+        prefixes[host_dir.name] = host_prefixes
+    return prefixes
+
+
+def trim_restored_log_prefix(current_bytes: bytes, checkpoint_prefix: bytes) -> bytes:
+    if not current_bytes or not checkpoint_prefix:
+        return current_bytes
+    checkpoint_prefix = checkpoint_prefix[-1_000_000:]
+    max_len = min(len(current_bytes), len(checkpoint_prefix))
+    for size in range(max_len, 0, -1):
+        if checkpoint_prefix.endswith(current_bytes[:size]):
+            return current_bytes[size:]
+    return current_bytes
+
+
+def wait_for_log_quiescence(
+    runtime_dir: Path,
+    quiet_seconds: float = 0.2,
+    timeout_seconds: float = 3.0,
+) -> None:
+    """Wait until application log files stop appearing or growing.
+
+    Shadow may create restored stdout/stderr files and drain inherited file
+    buffers shortly after a restore while simulated time is still paused. Taking
+    offsets before that drain completes makes the replay slice include
+    pre-window log lines. This waits on wall-clock file stability only; it does
+    not advance simulated time.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    previous: dict[str, dict[str, int]] | None = None
+    stable_since: float | None = None
+
+    while True:
+        current = snapshot_offsets(runtime_dir)
+        now = time.monotonic()
+        if current == previous:
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since >= quiet_seconds:
+                return
+        else:
+            previous = current
+            stable_since = now
+
+        if now >= deadline:
+            return
+        time.sleep(0.05)
+
+
+def capture_window(
+    runtime_dir: Path,
+    offsets: dict[str, dict[str, int]],
+    normalize_hex: bool,
+    checkpoint_prefixes: dict[str, dict[str, bytes]] | None = None,
+) -> dict[str, SliceSnapshot]:
     hosts_dir = runtime_dir / "shadow.data" / "hosts"
     captured: dict[str, SliceSnapshot] = {}
     if not hosts_dir.exists():
@@ -336,10 +439,20 @@ def capture_window(runtime_dir: Path, offsets: dict[str, dict[str, int]], normal
         previous = offsets.get(host_dir.name, {})
         for path in primary_log_files(host_dir, role):
             current_bytes = path.read_bytes()
-            old_size = previous.get(str(path.resolve()), 0)
+            resolved_path = str(path.resolve())
+            old_size = previous.get(resolved_path, 0)
             if old_size > len(current_bytes):
                 old_size = 0
-            text = normalize_text(current_bytes[old_size:].decode("utf-8", errors="replace"), normalize_hex)
+            stream = "stderr" if path.name.endswith(".stderr") else "stdout"
+            window_bytes = current_bytes[old_size:]
+            if (
+                checkpoint_prefixes is not None
+                and old_size == 0
+                and path.name.startswith("restored.")
+            ):
+                prefix = checkpoint_prefixes.get(host_dir.name, {}).get(stream, b"")
+                window_bytes = trim_restored_log_prefix(window_bytes, prefix)
+            text = normalize_text(window_bytes.decode("utf-8", errors="replace"), normalize_hex)
             if path.name.endswith(".stderr"):
                 snap.stderr += text
             else:
@@ -573,9 +686,12 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
         tdt_orchestrator.backup_managed_external_state(work_dir, bundle_root, study.experiment.managed_external_paths)
         bundle_backup_ms = (time.perf_counter() - bundle_start) * 1000.0
 
+        wait_for_log_quiescence(work_dir)
         pre_offsets = snapshot_offsets(work_dir)
+        checkpoint_prefixes = snapshot_prefixes(work_dir, pre_offsets)
         continue_for(session, study.experiment.comparison_window_seconds)
         wait_until_paused(session, timeout_sec=120.0)
+        wait_for_log_quiescence(work_dir)
         reference = capture_window(work_dir, pre_offsets, study.experiment.hex_normalization)
 
         restore_bundle_start = time.perf_counter()
@@ -583,10 +699,17 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
         bundle_restore_ms = (time.perf_counter() - restore_bundle_start) * 1000.0
 
         restore_elapsed_ms = issue_restore(session, label)
+        wait_for_log_quiescence(work_dir)
         post_offsets = snapshot_offsets(work_dir)
         continue_for(session, study.experiment.comparison_window_seconds)
         wait_until_paused(session, timeout_sec=120.0)
-        replay = capture_window(work_dir, post_offsets, study.experiment.hex_normalization)
+        wait_for_log_quiescence(work_dir)
+        replay = capture_window(
+            work_dir,
+            post_offsets,
+            study.experiment.hex_normalization,
+            checkpoint_prefixes,
+        )
 
         reference_artifacts = persist_window_snapshot(windows_dir, "reference", reference)
         replay_artifacts = persist_window_snapshot(windows_dir, "replay", replay)
