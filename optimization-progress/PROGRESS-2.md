@@ -465,3 +465,8 @@
 - 资料方向：保守并行离散事件仿真的性能瓶颈通常由 lookahead、同步频率、LP 间通信和 critical path 决定；Shadow 这类运行真实进程的仿真器还额外受 syscall/shim 交互边界约束。
 - 与本地试错对齐：socket-I/O async 能降低 read/write continue wall，但带来 window fragmentation；tail-drain 简单重入能看到机会但破坏 setup8 determinism；getrandom async 表面低副作用但 restore 后崩溃。
 - 决策：停止继续扩 async syscall 白名单。下一阶段如果还追 safepoint/overlap，必须先形式化 checkpoint-safe quiescent state 和跨 host event visibility，而不是继续挑 syscall 试开关。
+
+## 2026-05-30 checkpoint-safe safepoint 状态模型
+- 决策：新增独立文档 `optimization-progress/SAFPOINT-STATE-MODEL.md`，把 async continuation、host shmem lock、shim clock/current event、manager window boundary、run-control checkpoint 的状态边界写清楚。
+- 目的：停止无模型的行为试错。之后任何 overlap 实现必须先证明进入 checkpoint 前所有 async continuation drained，host shmem lock 状态稳定，managed thread `current_event` 已回到可 snapshot 状态。
+- 下一步候选：加 quiescence audit counter，而不是立即改行为。audit 应统计 pending host/thread、pending event kind、drain 后 re-enter opportunity、以及 drain 后 current event 是否可 snapshot。
