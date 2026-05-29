@@ -391,3 +391,12 @@
 - 本地代码定位：`SyscallConditionWake` task 由 `src/main/host/syscall/syscall_condition.c` 的 `_syscallcondition_scheduleWakeupTask()` 创建，触发后 `_syscallcondition_trigger()` 检查 process/thread/condition satisfied，然后调用 `host_continue(host, pid, tid)`；Rust 侧 task descriptor 在 `src/main/core/work/task.rs`，host 统计归类在 `src/main/host/host.rs`。
 - 下一步不应直接优化：`host_continue`/`continue_plugin` 是语义核心，之前 async 白名单已经证明容易破坏 determinism 或 CP/restore。继续动它前需要更明确的 safepoint 状态机。
 - 下一步应做的最小观测：把 syscall-condition wake wall 拆成 condition trigger/check 部分与 host_continue 部分，或者在 report 中先估算 syscall wake residual，确认 residual 是否足够大。只有 residual 稳定显著，才考虑 C/Rust 边界的小优化；否则继续回到 safepoint 设计。
+
+## 2026-05-29 syscall-condition wake split 观测补丁
+- 实现：在 `src/main/host/syscall/syscall_condition.c` 中新增只读 wall split counter，拆出 `trigger_lookup_wall_ns`、`satisfied_check_wall_ns`、`host_continue_wall_ns`、`wake_continue_wall_ns`、`wake_reblock_wall_ns`。
+- 语义边界：counter 只在 `SHADOW_TDT_PERF_COUNTERS` 打开时调用 `CLOCK_MONOTONIC` 并 relaxed 累加；不改变 wake task 调度、不改变 0-delay event、不改变 `host_continue` 调用时机，也不加入 checkpoint 状态。
+- TDT 适配：`experiments/perf_model/run_perf_model.py` 兼容解析新旧 syscall-condition counter 日志，并在 `Syscall Condition Wakeups` 表中展示 lookup/satisfied/host-continue/wake-continue/reblock wall ms。
+- 验证：Shadow `cargo fmt --manifest-path src/main/Cargo.toml` 通过；TDT `python3 -m py_compile experiments/perf_model/run_perf_model.py` 通过；Shadow `./setup build` 通过。
+- setup1 验证：`/tmp/tdt-syscond-split-setup1` passed=true。syscall wake wall=5111.75ms，managed continue=4864.35ms，lookup=2.77ms，satisfied=0.82ms，host_continue=5101.90ms，wake_continue=5109.58ms，reblock=0。
+- setup8 验证：`/tmp/tdt-syscond-split-setup8` passed=true。syscall wake wall=20658.66ms，managed continue=18234.88ms，lookup=23.67ms，satisfied=6.11ms，host_continue=20569.60ms，wake_continue=20638.88ms，reblock=0。
+- 结论：syscall-condition 本体不是主热点；lookup+satisfied 在 setup8 只有约 29.8ms，而 wake 桶几乎全部被 `host_continue` 吃掉。下一步不能在 condition trigger/check 上做优化，应该继续围绕 continuation/native safepoint 建模。

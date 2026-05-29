@@ -171,6 +171,11 @@ SYSCALL_CONDITION_COUNTER_RE = re.compile(
     r"notify_timeout_expired=(?P<notify_timeout_expired>[0-9]+) "
     r"signal_wakeups_scheduled=(?P<signal_wakeups_scheduled>[0-9]+) "
     r"signal_wakeups_blocked=(?P<signal_wakeups_blocked>[0-9]+)"
+    r"(?: trigger_lookup_wall_ns=(?P<trigger_lookup_wall_ns>[0-9]+) "
+    r"satisfied_check_wall_ns=(?P<satisfied_check_wall_ns>[0-9]+) "
+    r"host_continue_wall_ns=(?P<host_continue_wall_ns>[0-9]+) "
+    r"wake_continue_wall_ns=(?P<wake_continue_wall_ns>[0-9]+) "
+    r"wake_reblock_wall_ns=(?P<wake_reblock_wall_ns>[0-9]+))?"
 )
 
 
@@ -851,6 +856,21 @@ def summarize_case(case: dict[str, Any]) -> dict[str, Any]:
         "syscond_notify_timeout_expired": median_phase_value(
             syscall_condition_stats, "notify_timeout_expired"
         ),
+        "syscond_trigger_lookup_wall_ms": None
+        if median_phase_value(syscall_condition_stats, "trigger_lookup_wall_ns") is None
+        else median_phase_value(syscall_condition_stats, "trigger_lookup_wall_ns") / 1_000_000.0,
+        "syscond_satisfied_check_wall_ms": None
+        if median_phase_value(syscall_condition_stats, "satisfied_check_wall_ns") is None
+        else median_phase_value(syscall_condition_stats, "satisfied_check_wall_ns") / 1_000_000.0,
+        "syscond_host_continue_wall_ms": None
+        if median_phase_value(syscall_condition_stats, "host_continue_wall_ns") is None
+        else median_phase_value(syscall_condition_stats, "host_continue_wall_ns") / 1_000_000.0,
+        "syscond_wake_continue_wall_ms": None
+        if median_phase_value(syscall_condition_stats, "wake_continue_wall_ns") is None
+        else median_phase_value(syscall_condition_stats, "wake_continue_wall_ns") / 1_000_000.0,
+        "syscond_wake_reblock_wall_ms": None
+        if median_phase_value(syscall_condition_stats, "wake_reblock_wall_ns") is None
+        else median_phase_value(syscall_condition_stats, "wake_reblock_wall_ns") / 1_000_000.0,
         "checkpoint_criu_ms": median_phase_value(phase_timings, "criu"),
         "checkpoint_json_ms": median_phase_value(phase_timings, "json"),
         "checkpoint_total_phase_ms": median_phase_value(phase_timings, "total"),
@@ -1200,13 +1220,13 @@ def render_report(
             "",
             "## Syscall Condition Wakeups",
             "",
-            "| Setup | schedule attempts | scheduled | skipped scheduled | trigger enters | continues | reblocks | status notifications | timeout notifications |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Setup | schedule attempts | scheduled | skipped scheduled | trigger enters | continues | reblocks | status notifications | timeout notifications | lookup ms | satisfied ms | host continue ms | wake continue ms | wake reblock ms |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for item in summaries:
         lines.append(
-            "| {setup} | {attempts} | {scheduled} | {skipped} | {enters} | {continues} | {reblocks} | {status} | {timeout} |".format(
+            "| {setup} | {attempts} | {scheduled} | {skipped} | {enters} | {continues} | {reblocks} | {status} | {timeout} | {lookup_ms} | {satisfied_ms} | {host_continue_ms} | {wake_continue_ms} | {wake_reblock_ms} |".format(
                 setup=item["setup"],
                 attempts=""
                 if item.get("syscond_schedule_attempts") is None
@@ -1232,6 +1252,21 @@ def render_report(
                 timeout=""
                 if item.get("syscond_notify_timeout_expired") is None
                 else f"{item['syscond_notify_timeout_expired']:.0f}",
+                lookup_ms=""
+                if item.get("syscond_trigger_lookup_wall_ms") is None
+                else f"{item['syscond_trigger_lookup_wall_ms']:.2f}",
+                satisfied_ms=""
+                if item.get("syscond_satisfied_check_wall_ms") is None
+                else f"{item['syscond_satisfied_check_wall_ms']:.2f}",
+                host_continue_ms=""
+                if item.get("syscond_host_continue_wall_ms") is None
+                else f"{item['syscond_host_continue_wall_ms']:.2f}",
+                wake_continue_ms=""
+                if item.get("syscond_wake_continue_wall_ms") is None
+                else f"{item['syscond_wake_continue_wall_ms']:.2f}",
+                wake_reblock_ms=""
+                if item.get("syscond_wake_reblock_wall_ms") is None
+                else f"{item['syscond_wake_reblock_wall_ms']:.2f}",
             )
         )
     lines.extend(
