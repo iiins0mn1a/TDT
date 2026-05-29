@@ -459,3 +459,9 @@
 - 失败结果：performance passed=false。checkpoint 已完成，但 restore 时 control socket 关闭，runner 报 `Shadow exited before socket became ready (code=-11)`；Shadow log 尾部有 `memory allocation of 138914342207488 bytes failed` 和 `memory allocation of 138914610310592 bytes failed`。
 - 解释：即使 getrandom handler 表面无 fd/网络/timer 副作用，把它跨 async continuation 边界也会在 restore 后触发状态/内存一致性问题。它不是可保留的低风险优化。
 - 决策：撤回 `SHADOW_TDT_ASYNC_GETRANDOM` 行为代码。当前保留的仍只有 scope-drain 机会计数，不包含 getrandom async。
+
+## 2026-05-30 外部资料复核：async 白名单不是主线
+- 检索关键词：conservative parallel discrete event simulation lookahead performance synchronization；parallel discrete event simulation critical path lookahead；Shadow simulator performance parallel real applications system calls。
+- 资料方向：保守并行离散事件仿真的性能瓶颈通常由 lookahead、同步频率、LP 间通信和 critical path 决定；Shadow 这类运行真实进程的仿真器还额外受 syscall/shim 交互边界约束。
+- 与本地试错对齐：socket-I/O async 能降低 read/write continue wall，但带来 window fragmentation；tail-drain 简单重入能看到机会但破坏 setup8 determinism；getrandom async 表面低副作用但 restore 后崩溃。
+- 决策：停止继续扩 async syscall 白名单。下一阶段如果还追 safepoint/overlap，必须先形式化 checkpoint-safe quiescent state 和跨 host event visibility，而不是继续挑 syscall 试开关。
