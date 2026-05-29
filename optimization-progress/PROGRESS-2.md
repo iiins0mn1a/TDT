@@ -326,3 +326,26 @@
 - 决策：保留默认关闭的 socket-I/O + inline-drain 实验代码进入分支，作为下一轮显式 safepoint/host-local quiescence 状态机的基础；不把它作为默认优化开启，也不声称性能目标完成。
 - 下一步：在最终清理后的代码上再跑一轮完整默认 suite；若仍 YES，则提交并推送 Shadow 分支，再更新 TDT submodule/progress，确保当前稳定状态保存到远程。
 - 最终清理版验证：`/tmp/tdt-inline-final-default-suite` 输出 YES。真实客户端 setup1/4/8、6 个 synthetic CP/restore、reference-performance 全部通过。最终默认性能参考：setup1 steady=44.84x checkpoint=146.40ms restore=84.64ms；setup4 steady=38.71x checkpoint=104.46ms restore=188.76ms；setup8 steady=32.77x checkpoint=141.80ms restore=363.56ms。
+
+## 2026-05-29 async continue 第四轮：same-window re-enter 负结果
+- 本轮主矛盾复核：`continue_plugin_receive_wall_ns` 不是纯 channel receive 成本，而是 native thread 从收到 Shadow 回复到下一次 syscall/yield 的运行时间。Erdos 只读审计确认底层 `SelfContainedChannel` 已经是共享内存 SPSC，single-consumer receive 已避开普通 receive 的 Reading 状态；优先改 channel 状态机收益低、语义风险高。
+- 新试验：实现临时 `SHADOW_TDT_ASYNC_SCOPE_REENTER`，只在 `ASYNC_CONTINUE + SOCKET_IO + SCOPE_DRAIN` 时启用。设计目标是保留 scope-drain 的跨 host overlap，同时 drain 后在同一个 outer manager window 内继续执行该 host，避免 socket-only scope drain 把后续 host 工作推到下一轮 window。
+- 语义结果：`/tmp/tdt-async-reenter-on-setup1`、`/tmp/tdt-async-reenter-on-setup4`、`/tmp/tdt-async-reenter-on-setup8` 全部 passed=true。说明 same-window re-enter 没有立刻破坏真实客户端 CP/restore determinism。
+- 性能结果：`/tmp/tdt-async-reenter-performance` passed=true，但端到端性能明显退化：setup1 steady=43.31x，setup4 steady=36.61x，setup8 steady=29.27x。对比 inline drain setup8 32.72x 和默认最终 32.77x，re-enter 不是优化。
+- 解释：re-enter 虽然减少了部分 local/syscall wake 统计项，但 worker busy 下降到 setup8 12.50%，Scope/max-body 也降到 39.97%，整体并行结构变差；并且当前 re-enter 的二次 `host.execute` 未接入完整细粒度 counters，报告细项不能作为收益依据，只能看端到端 steady。
+- 决策：移除 `SHADOW_TDT_ASYNC_SCOPE_REENTER` 代码，不保留该负路线。下一步不再尝试把 socket-I/O scope-drain 和 same-window re-enter 拼接；改为按 syscall 风险排序，单独验证低风险 `getrandom` 是否能作为更稀疏的 async safepoint 候选。
+- getrandom-only 试验：临时加入 `SHADOW_TDT_ASYNC_GETRANDOM`，只允许 `getrandom` completion 进入 async scope-drain，不叠加 socket-I/O。setup1 `/tmp/tdt-async-getrandom-on-setup1` 在 restore 阶段 Shadow `code=-11`，control socket 关闭。
+- 判断：`getrandom` handler 本身是低风险 deterministic RNG + 用户内存写回，但把它作为 async continuation 切点仍会暴露 restore/continuation 中间态。这个结果说明问题不只是 syscall 类型风险，而是 scope-drain async 状态机本身与 CP/restore 静止点仍不够显式。
+- 决策：移除 `SHADOW_TDT_ASYNC_GETRANDOM` 代码，不保留该负路线。下一步应停止继续扩 syscall 白名单，转向两类更根本的工作：一是细分 prepare/clock/runahead 纯同步成本，二是显式状态机化 async continuation safepoint，而不是继续靠白名单试错。
+
+## 2026-05-29 阶段性总结：停止白名单式 async 试错
+- 本阶段回答的问题：真实客户端 TDT 的主要性能瓶颈是否能通过简单 managed-thread async continuation 绕开。结论是否定的：socket-I/O async 证明了 receive 等待可以被隐藏，但端到端收益不稳定；其它白名单候选要么破坏 determinism，要么 restore 崩溃，要么降低整体并行效率。
+- 当前稳定成果：默认路径仍可用，`/tmp/tdt-inline-final-default-suite` 输出 YES。真实客户端 setup1/4/8、6 个 synthetic CP/restore、reference-performance 全部通过。Shadow 已保存的正向实验是默认关闭的 socket-I/O + inline-drain 开关，作为后续显式 safepoint 设计的材料，不作为默认优化。
+- 性能基线：最终默认 suite 参考数据为 setup1 steady=44.84x、setup4 steady=38.71x、setup8 steady=32.77x。这个数字是当前阶段后续判断的基线；低于它的实验不应继续包装成优化。
+- 关键洞察 1：`continue_plugin_receive_wall_ns` 不能被理解成 channel receive 开销。它主要包含 native thread 从收到 Shadow 回复到下一次 syscall/yield 的真实运行时间，因此改 `SelfContainedChannel` 状态机不是当前主路线。
+- 关键洞察 2：async continuation 的语义边界比 syscall 类型更重要。即使 `getrandom` 本身低风险，一旦作为 async 切点进入 scope-drain，也能在 restore 阶段崩溃，说明 pending continuation 与 CP/restore 静止点需要显式状态机，而不是靠白名单规避。
+- 关键洞察 3：调度结构会吞掉局部收益。socket-I/O scope-drain 能降低 read/write continue wall time，但会把 scheduler windows 从 setup8 约 2956 推到 5600；inline-drain 消除了碎片化，但减少 overlap；same-window re-enter 语义通过但 setup8 steady 退到 29.27x。
+- 负结果清单：事件循环白名单导致真实客户端 determinism drift；readiness-only 在 restore 失败；ordered-drain restore code=-11；same-window re-enter 性能退化；getrandom-only restore code=-11。这些路线暂不继续。
+- 下一阶段不继续做什么：不再扩 syscall 白名单，不再把 runahead/网络延迟当作调参手段，不默认开启任何 async 实验，不修改应用层配置。
+- 下一阶段应该做什么：先把 `continue_plugin` 的同步 prepare 成本拆细观测，包括 `Worker::max_event_runahead_time(host)`、`host.set_shim_clock_state(...)`、`host.unlock_shmem()`、send/receive/lock/time update 的真实比例。只有当同步成本里出现可证明的模拟层内部热点时，再做无语义变化的压缩。
+- 若继续 async 方向，必须先设计显式 safepoint 状态机：定义 pending native、drained-yielded、checkpoint-safe 三类状态，并保证 checkpoint/pause 只发生在明确静止点。没有这个模型之前，继续白名单试错价值很低。
