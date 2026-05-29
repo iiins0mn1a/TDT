@@ -126,6 +126,9 @@ MANAGED_THREAD_COUNTER_RE = re.compile(
     r"continue_plugin_receive_wall_ns=(?P<continue_plugin_receive_wall_ns>[0-9]+) "
     r"continue_plugin_lock_wall_ns=(?P<continue_plugin_lock_wall_ns>[0-9]+) "
     r"(?:continue_plugin_prepare_wall_ns=(?P<continue_plugin_prepare_wall_ns>[0-9]+) "
+    r"(?:continue_plugin_runahead_wall_ns=(?P<continue_plugin_runahead_wall_ns>[0-9]+) "
+    r"continue_plugin_clock_state_wall_ns=(?P<continue_plugin_clock_state_wall_ns>[0-9]+) "
+    r"continue_plugin_unlock_wall_ns=(?P<continue_plugin_unlock_wall_ns>[0-9]+) )?"
     r"continue_plugin_send_wall_ns=(?P<continue_plugin_send_wall_ns>[0-9]+) "
     r"continue_plugin_time_update_wall_ns=(?P<continue_plugin_time_update_wall_ns>[0-9]+) )?"
     r"syscall_handler_calls=(?P<syscall_handler_calls>[0-9]+) "
@@ -808,6 +811,15 @@ def summarize_case(case: dict[str, Any]) -> dict[str, Any]:
         "managed_continue_plugin_prepare_wall_ms": None
         if median_phase_value(managed_thread_stats, "continue_plugin_prepare_wall_ns") is None
         else median_phase_value(managed_thread_stats, "continue_plugin_prepare_wall_ns") / 1_000_000.0,
+        "managed_continue_plugin_runahead_wall_ms": None
+        if median_phase_value(managed_thread_stats, "continue_plugin_runahead_wall_ns") is None
+        else median_phase_value(managed_thread_stats, "continue_plugin_runahead_wall_ns") / 1_000_000.0,
+        "managed_continue_plugin_clock_state_wall_ms": None
+        if median_phase_value(managed_thread_stats, "continue_plugin_clock_state_wall_ns") is None
+        else median_phase_value(managed_thread_stats, "continue_plugin_clock_state_wall_ns") / 1_000_000.0,
+        "managed_continue_plugin_unlock_wall_ms": None
+        if median_phase_value(managed_thread_stats, "continue_plugin_unlock_wall_ns") is None
+        else median_phase_value(managed_thread_stats, "continue_plugin_unlock_wall_ns") / 1_000_000.0,
         "managed_continue_plugin_send_wall_ms": None
         if median_phase_value(managed_thread_stats, "continue_plugin_send_wall_ns") is None
         else median_phase_value(managed_thread_stats, "continue_plugin_send_wall_ns") / 1_000_000.0,
@@ -1066,13 +1078,13 @@ def render_report(
             "",
             "## Managed Thread Wall Time",
             "",
-            "| Setup | continue_plugin calls | continue_plugin ms | receive ms | lock ms | prepare ms | send ms | time update ms | syscall handler calls | syscall handler ms | syscall continue calls | syscall continue ms |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Setup | continue_plugin calls | continue_plugin ms | receive ms | lock ms | prepare ms | runahead ms | clock state ms | unlock ms | send ms | time update ms | syscall handler calls | syscall handler ms | syscall continue calls | syscall continue ms |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for item in summaries:
         lines.append(
-            "| {setup} | {cont_calls} | {cont_ms} | {recv_ms} | {lock_ms} | {prepare_ms} | {send_ms} | {time_update_ms} | {handler_calls} | {handler_ms} | {sys_cont_calls} | {sys_cont_ms} |".format(
+            "| {setup} | {cont_calls} | {cont_ms} | {recv_ms} | {lock_ms} | {prepare_ms} | {runahead_ms} | {clock_state_ms} | {unlock_ms} | {send_ms} | {time_update_ms} | {handler_calls} | {handler_ms} | {sys_cont_calls} | {sys_cont_ms} |".format(
                 setup=item["setup"],
                 cont_calls=""
                 if item.get("managed_continue_plugin_calls") is None
@@ -1089,6 +1101,15 @@ def render_report(
                 prepare_ms=""
                 if item.get("managed_continue_plugin_prepare_wall_ms") is None
                 else f"{item['managed_continue_plugin_prepare_wall_ms']:.2f}",
+                runahead_ms=""
+                if item.get("managed_continue_plugin_runahead_wall_ms") is None
+                else f"{item['managed_continue_plugin_runahead_wall_ms']:.2f}",
+                clock_state_ms=""
+                if item.get("managed_continue_plugin_clock_state_wall_ms") is None
+                else f"{item['managed_continue_plugin_clock_state_wall_ms']:.2f}",
+                unlock_ms=""
+                if item.get("managed_continue_plugin_unlock_wall_ms") is None
+                else f"{item['managed_continue_plugin_unlock_wall_ms']:.2f}",
                 send_ms=""
                 if item.get("managed_continue_plugin_send_wall_ms") is None
                 else f"{item['managed_continue_plugin_send_wall_ms']:.2f}",

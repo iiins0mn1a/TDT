@@ -349,3 +349,13 @@
 - 下一阶段不继续做什么：不再扩 syscall 白名单，不再把 runahead/网络延迟当作调参手段，不默认开启任何 async 实验，不修改应用层配置。
 - 下一阶段应该做什么：先把 `continue_plugin` 的同步 prepare 成本拆细观测，包括 `Worker::max_event_runahead_time(host)`、`host.set_shim_clock_state(...)`、`host.unlock_shmem()`、send/receive/lock/time update 的真实比例。只有当同步成本里出现可证明的模拟层内部热点时，再做无语义变化的压缩。
 - 若继续 async 方向，必须先设计显式 safepoint 状态机：定义 pending native、drained-yielded、checkpoint-safe 三类状态，并保证 checkpoint/pause 只发生在明确静止点。没有这个模型之前，继续白名单试错价值很低。
+
+## 2026-05-29 局部收尾：continue_plugin prepare 细分观测
+- 本次只完成上一阶段留下的局部任务：把 `continue_plugin_prepare_wall_ns` 拆成 `runahead`、`clock_state`、`unlock` 三个子计数，并让 TDT perf model 报告这些列。目标是判断 prepare 是否存在模拟层内部可压缩热点，不继续扩展 async syscall 白名单。
+- Shadow 改动点：`src/main/host/managed_thread.rs` 新增 `continue_plugin_runahead_wall_ns`、`continue_plugin_clock_state_wall_ns`、`continue_plugin_unlock_wall_ns` 三个 perf counter。计数只在 `SHADOW_TDT_PERF_COUNTERS` 开启时生效，默认路径不改变行为。
+- TDT 改动点：`experiments/perf_model/run_perf_model.py` 兼容解析新旧 managed-thread counter 日志，并在 `Managed Thread Wall Time` 表格中展示 `runahead ms`、`clock state ms`、`unlock ms`。
+- 验证：Shadow `cargo fmt --manifest-path src/main/Cargo.toml` 通过；Shadow `./setup build` 通过；TDT `python3 -m py_compile experiments/perf_model/run_perf_model.py` 通过。
+- 最小真实客户端性能样本：`/tmp/tdt-continue-prepare-split-performance` passed=true。setup1 steady=44.89x，checkpoint=150.07ms，restore=88.58ms。
+- 新观测值：setup1 `continue_plugin` 总计 4669.04ms，其中 receive=4119.65ms、send=523.25ms、prepare=10.08ms；prepare 内部 runahead=2.42ms、clock state=1.59ms、unlock=1.69ms。
+- 结论：prepare 子项不是当前性能主矛盾，至少在 setup1 上只占 `continue_plugin` 的约 0.2%。本次观测没有发现值得立即压缩的同步 prepare 热点。
+- 阶段停止点：不继续展开新路线。若之后恢复 goal，优先回到两个主判断：一是显式 safepoint 状态机是否能让 async continuation 与 CP/restore 共存；二是 setup4/8 上是否存在与 setup1 不同的同步模拟层热点。
