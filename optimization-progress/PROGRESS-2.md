@@ -417,3 +417,18 @@
 - PDES 资料共识：保守并行仿真的性能主要受 lookahead、同步开销、LP 间通信/调度结构影响；没有额外 lookahead 或 rollback 时，微调单个本地函数通常不能改变并行度上限。
 - 与本地证据对齐：route-cache、host scan、condition lookup/check、prepare 都已被降级；剩下的大头是 continuation 边界本身。
 - 下一步路线：如果继续追求性能，应该围绕显式 safepoint/overlap 状态机建模，而不是继续做 syscall 白名单调参或 C/Rust 小函数微优化。任何 async/overlap 实验必须满足 pause/checkpoint 前 pending continuation drained 的硬语义。
+
+## 2026-05-29 暂停前局部收尾：safepoint 方向边界
+- 当前仓库状态：TDT 分支 `explore/async-continue-safepoint` 停在 `a82f97a Record safepoint performance direction`；Shadow 子模块分支 `explore/async-continue-safepoint` 停在 `a0fda674a Split syscall condition wake counters`。两个分支均已跟踪对应远程分支，工作区没有新的代码改动，只有已知的 `deps/shadow/src/test/signal/shadow.data/` 测试残留。
+- 当前主要矛盾：真实客户端 TDT 的性能主路径已经收敛到 managed continuation / native thread 跑到下一 syscall/yield 的时间。这个路径不是单个本地函数热点，而是 Shadow 与真实进程交互的语义边界。
+- 已降级方向 1：route-cache。setup8 两轮 A/B 中默认已开启，关/开差异只有约 0.68%，低于噪声，不能作为继续优化主线。
+- 已降级方向 2：host 全量扫描。setup8 scans/execute 约 1.146，setup1 约 1.374，扫描比例不随节点数扩大恶化，不能解释 setup 扩大后的吞吐下降。
+- 已降级方向 3：syscall-condition trigger/check。setup8 中 lookup+satisfied 总计只有约 29.8ms，而 syscall wake wall 约 20.7s，说明 condition 本体不是瓶颈。
+- 已降级方向 4：`host_continue` 框架 residual。setup8 residual 约 363.83ms，占 host_continue 约 1.77%；setup1 residual 约 1.85ms，占 0.04%。这说明大头不是 host/process/thread 包装层，而是继续 managed/native thread 本身。
+- 已降级方向 5：当前 inline async socket-I/O safepoint。它能保留 determinism 和窗口 fixed point，但因为立即 drain，缺少真实 overlap；setup8 两轮 A/B 反而约慢 1.39%，不是可提交性能优化。
+- 已知风险方向：scope-drain 能暴露 overlap，但会切碎 scheduler window；之前观察到 window 数明显增加，因此不能直接把它当优化打开。
+- 当前唯一值得保留的候选：显式 safepoint/overlap 状态机。候选形态是在 manager window 尾部 drain pending async continuation，并在同一 window 内对仍早于 `window_end` 的 host 重新进入 `Host::execute`，直到 fixed point；pause/checkpoint 前必须保证 pending continuation 已 drain。
+- 本次未继续实施原因：这个方向会触及 CP/restore 静止点、host shmem lock 状态、以及 manager window fixed point 语义。继续动代码前，应先做一个只读/低侵入观测补丁，统计 scope-drain 后 `host.next_event_time() < window_end` 的 re-enter 机会是否足够多。
+- 恢复 goal 时的推荐第一步：不要再做随机调参。只加观测 counter：`async_scope_pending_hosts`、`async_scope_reenter_opportunities`、可选 `async_scope_drain_wall_ns`；用 setup8 perf 模型跑一轮，判断 same-window tail-drain 是否有足够机会。如果机会少，直接停止该路线；如果机会多，再实现最小 tail-drain fixed-point 原型。
+- 功能守卫仍然是：TDT 真实客户端 determinism setup 1/4/8、TDT local suite、以及本地合成 CP/restore verifier。任何 safepoint 优化只有在这些守卫不退化时才可保留。
+- 暂停结论：当前阶段没有留下半成品代码；已经提交并推送的是观测和报告能力，不是默认行为变更。下一次恢复时应从“scope-drain fixed-point 机会计数”进入，而不是从新的性能路线或应用层配置开始。
