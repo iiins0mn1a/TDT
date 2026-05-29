@@ -307,3 +307,22 @@
 - default-off determinism 数据：setup1 checkpoint=146.39ms restore=82.17ms mismatches=0；setup4 checkpoint=131.42ms restore=194.14ms mismatches=0；setup8 checkpoint=171.56ms restore=366.51ms mismatches=0。
 - default-off performance：setup1 steady=42.95x checkpoint=144.29ms restore=88.01ms；setup4 steady=40.36x checkpoint=143.87ms restore=196.71ms；setup8 steady=32.75x checkpoint=212.60ms restore=614.75ms。
 - 当前判断：async continue 方向仍是主性能矛盾的合理路线，但简单 host-level async 不满足 CP/restore determinism。下一步不能继续收窄白名单式调参；应转向显式定义 async safepoint 状态机，或者寻找不释放同步 resume 语义的更小 overlap 点。
+
+## 2026-05-29 async continue 第三轮：socket I/O 与 inline drain
+- 本轮主矛盾：上一轮 readiness-only async 失败后，继续只探索 managed-thread continue overlap，不展开 runahead、网络延迟、packet queue 或应用层配置。核心问题变成：能否找到一个不破坏 CP/restore 的 async 边界，同时不把 scheduler window 切碎。
+- 外部资料复盘：PDES/并行离散事件仿真的主线仍是 conservative lookahead 与 optimistic rollback；TDT 真实客户端和 CP/restore 目标不适合引入应用级 rollback，所以本轮继续选择保守、可静止点证明的 async continuation，而不是改变模拟语义。
+- 失败试验：实现 `SHADOW_TDT_ASYNC_ORDERED_DRAIN`，尝试按 host id 稳定顺序 drain pending continuation。setup1 restore 仍 Shadow code=-11。判断：全局 host 顺序不是主因；pending continuation 与 restore 静止点状态边界仍需要更明确建模。该代码随后已移除，避免固化失败路线。
+- 新边界试验：实现 `SHADOW_TDT_ASYNC_SOCKET_IO`，只异步化 socket/legacy-tcp 上的 `read/write/readv/writev` completion，不再碰 futex、sleep、epoll 等等待类 syscall。原因是性能报告中 read/write continue wall time 很大，同时这类 syscall 的完成语义比 sleep/futex 更接近数据面 I/O。
+- socket-I/O async determinism：setup1 `/tmp/tdt-async-socketio-on-setup1`、setup4 `/tmp/tdt-async-socketio-on-setup4`、setup8 `/tmp/tdt-async-socketio-on-setup8` 全部 passed=true。这是 async continue 路线第一次通过真实客户端 determinism setup1/4/8。
+- socket-I/O async 性能负面：`/tmp/tdt-async-socketio-nolog-performance` 虽然把 setup8 local wall 从约 20.86s 降到约 9.33s，`SyscallComplete->Syscall` wall 从约 17.52s 降到约 8.52s，但 scheduler windows 从 2956 增到 5600，worker busy 从 40.33% 降到 17.52%，steady 从同构默认 31.96x 降到 31.27x。
+- subagent Socrates 结论：socket syscall 级收益真实存在，但新增开销是 scheduler fragmentation；setup4/8 windows 接近翻倍，吞掉 read/write async 的收益。
+- subagent Lagrange 结论：碎片化的直接原因是 `Host::execute` 发现 pending async 后立即 break，completion 被 manager post-scope drain，后续同 host 工作只能进入下一轮 scheduler window。更好的静止点位置在 host-local drain，而不是 manager 外层。
+- 最小正向试验：实现 `SHADOW_TDT_ASYNC_INLINE_DRAIN`。当 host 内出现 pending async continuation 时，在同一个 `Host::execute(until)` 内 `drain_async_continuations()` 并继续本 host 事件循环，而不是返回 manager 制造新 window。
+- inline drain determinism：setup1 `/tmp/tdt-async-inline-drain-on-setup1`、setup4 `/tmp/tdt-async-inline-drain-on-setup4`、setup8 `/tmp/tdt-async-inline-drain-on-setup8` 全部 passed=true。
+- inline drain 性能：`/tmp/tdt-async-inline-drain-performance` 中 setup1 steady=43.26x，setup4 steady=40.17x，setup8 steady=32.72x；scheduler windows 恢复为 2356/2356/2956，说明碎片化被消除。
+- 同构默认对比：`/tmp/tdt-current-default-performance` 为 setup1 43.36x、setup4 41.69x、setup8 31.96x；inline drain 为 setup1 -0.2%、setup4 -3.6%、setup8 +2.4%。结论：这不是稳定明确的整体优化，但已经把“可确定性 + 不碎窗口”的实现位置找出来了。
+- 默认路径保护：清理 ordered-drain 失败代码后重新 build 通过。随后默认环境完整 suite `/tmp/tdt-inline-default-suite` 输出 YES：真实客户端 setup1/4/8、6 个 synthetic CP/restore、reference-performance 全部通过。
+- 默认 suite 性能参考：`/tmp/tdt-inline-default-suite/performance/REPORT.md` 中 setup1 steady=43.21x、setup4 steady=38.85x、setup8 steady=32.64x；这是默认关闭 async 的基线，不代表 inline drain 开关收益。
+- 决策：保留默认关闭的 socket-I/O + inline-drain 实验代码进入分支，作为下一轮显式 safepoint/host-local quiescence 状态机的基础；不把它作为默认优化开启，也不声称性能目标完成。
+- 下一步：在最终清理后的代码上再跑一轮完整默认 suite；若仍 YES，则提交并推送 Shadow 分支，再更新 TDT submodule/progress，确保当前稳定状态保存到远程。
+- 最终清理版验证：`/tmp/tdt-inline-final-default-suite` 输出 YES。真实客户端 setup1/4/8、6 个 synthetic CP/restore、reference-performance 全部通过。最终默认性能参考：setup1 steady=44.84x checkpoint=146.40ms restore=84.64ms；setup4 steady=38.71x checkpoint=104.46ms restore=188.76ms；setup8 steady=32.77x checkpoint=141.80ms restore=363.56ms。
