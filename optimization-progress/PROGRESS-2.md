@@ -400,3 +400,13 @@
 - setup1 验证：`/tmp/tdt-syscond-split-setup1` passed=true。syscall wake wall=5111.75ms，managed continue=4864.35ms，lookup=2.77ms，satisfied=0.82ms，host_continue=5101.90ms，wake_continue=5109.58ms，reblock=0。
 - setup8 验证：`/tmp/tdt-syscond-split-setup8` passed=true。syscall wake wall=20658.66ms，managed continue=18234.88ms，lookup=23.67ms，satisfied=6.11ms，host_continue=20569.60ms，wake_continue=20638.88ms，reblock=0。
 - 结论：syscall-condition 本体不是主热点；lookup+satisfied 在 setup8 只有约 29.8ms，而 wake 桶几乎全部被 `host_continue` 吃掉。下一步不能在 condition trigger/check 上做优化，应该继续围绕 continuation/native safepoint 建模。
+
+## 2026-05-29 host_continue residual 建模
+- 代码阅读：`host_continue` 进入 Rust `Host::resume()`，再到 `Process::resume()`、`Thread::resume()`、`ManagedThread::resume()`。其中 `ManagedThread::resume()` 已经有 `syscall_handler_wall_ns` 和 `syscall_continue_wall_ns` 两个大项。
+- 决策：不继续加 Shadow counter，先在 TDT report 层派生 `host_continue - (syscall_handler + syscall_continue)` residual。这个能判断 host/process/thread 框架本身是否还有隐藏大头。
+- 实现：`experiments/perf_model/run_perf_model.py` 新增 `syscond_handler_plus_continue_wall_ms`、`syscond_host_continue_residual_wall_ms`、`syscond_host_continue_residual_percent`，并在 `Syscall Condition Wakeups` 表展示。
+- 修复：第一次 patch 误把 `run_performance()` 返回 dict 改成局部变量，导致 `summarize_case(None)` 崩溃；随后恢复 `return summary_out` 并把 `summarize_case()` 正确改为先构造 dict 再补派生字段。
+- 验证：`python3 -m py_compile experiments/perf_model/run_perf_model.py` 通过；`/tmp/tdt-host-continue-residual-setup1-final` passed=true，报告中出现 residual 字段。
+- setup1 新样本：host_continue=5223.43ms，handler+continue=5221.58ms，residual=1.85ms，占 0.04%。
+- setup8 既有样本重算：host_continue=20569.60ms，handler=1884.96ms，continue=18320.82ms，handler+continue=20205.78ms，residual=363.83ms，占 1.77%。
+- 结论：`host_continue` 不是新的大黑盒；绝大部分可解释为 syscall handler + syscall continue。真正主热点继续收敛到 `syscall_continue` / managed continuation，尤其是 native thread 从 Shadow 回复后跑到下一次 syscall/yield 的时间。

@@ -645,7 +645,7 @@ def summarize_case(case: dict[str, Any]) -> dict[str, Any]:
     max_worker_body_continue_receive_wall_ns = median_phase_value(
         scheduler_stats, "max_worker_body_continue_receive_wall_ns"
     )
-    return {
+    summary_out = {
         "setup": case["setup"],
         "passed": case["returncode"] == 0 and bool(data),
         "elapsed_seconds": elapsed_seconds,
@@ -880,6 +880,28 @@ def summarize_case(case: dict[str, Any]) -> dict[str, Any]:
         "shadow_log_paths": case.get("shadow_log_paths") or [],
         "result_path": case["result_path"],
     }
+    syscond_host_continue_ms = summary_out.get("syscond_host_continue_wall_ms")
+    managed_syscall_handler_ms = summary_out.get("managed_syscall_handler_wall_ms")
+    managed_syscall_continue_ms = summary_out.get("managed_syscall_continue_wall_ms")
+    if None not in (
+        syscond_host_continue_ms,
+        managed_syscall_handler_ms,
+        managed_syscall_continue_ms,
+    ):
+        managed_resume_ms = managed_syscall_handler_ms + managed_syscall_continue_ms
+        residual_ms = syscond_host_continue_ms - managed_resume_ms
+        summary_out["syscond_handler_plus_continue_wall_ms"] = managed_resume_ms
+        summary_out["syscond_host_continue_residual_wall_ms"] = residual_ms
+        summary_out["syscond_host_continue_residual_percent"] = (
+            (residual_ms / syscond_host_continue_ms) * 100.0
+            if syscond_host_continue_ms
+            else None
+        )
+    else:
+        summary_out["syscond_handler_plus_continue_wall_ms"] = None
+        summary_out["syscond_host_continue_residual_wall_ms"] = None
+        summary_out["syscond_host_continue_residual_percent"] = None
+    return summary_out
 
 
 def render_report(
@@ -1220,13 +1242,13 @@ def render_report(
             "",
             "## Syscall Condition Wakeups",
             "",
-            "| Setup | schedule attempts | scheduled | skipped scheduled | trigger enters | continues | reblocks | status notifications | timeout notifications | lookup ms | satisfied ms | host continue ms | wake continue ms | wake reblock ms |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Setup | schedule attempts | scheduled | skipped scheduled | trigger enters | continues | reblocks | status notifications | timeout notifications | lookup ms | satisfied ms | host continue ms | handler+continue ms | residual ms | residual % | wake continue ms | wake reblock ms |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for item in summaries:
         lines.append(
-            "| {setup} | {attempts} | {scheduled} | {skipped} | {enters} | {continues} | {reblocks} | {status} | {timeout} | {lookup_ms} | {satisfied_ms} | {host_continue_ms} | {wake_continue_ms} | {wake_reblock_ms} |".format(
+            "| {setup} | {attempts} | {scheduled} | {skipped} | {enters} | {continues} | {reblocks} | {status} | {timeout} | {lookup_ms} | {satisfied_ms} | {host_continue_ms} | {handler_plus_continue_ms} | {residual_ms} | {residual_pct} | {wake_continue_ms} | {wake_reblock_ms} |".format(
                 setup=item["setup"],
                 attempts=""
                 if item.get("syscond_schedule_attempts") is None
@@ -1261,6 +1283,15 @@ def render_report(
                 host_continue_ms=""
                 if item.get("syscond_host_continue_wall_ms") is None
                 else f"{item['syscond_host_continue_wall_ms']:.2f}",
+                handler_plus_continue_ms=""
+                if item.get("syscond_handler_plus_continue_wall_ms") is None
+                else f"{item['syscond_handler_plus_continue_wall_ms']:.2f}",
+                residual_ms=""
+                if item.get("syscond_host_continue_residual_wall_ms") is None
+                else f"{item['syscond_host_continue_residual_wall_ms']:.2f}",
+                residual_pct=""
+                if item.get("syscond_host_continue_residual_percent") is None
+                else f"{item['syscond_host_continue_residual_percent']:.2f}",
                 wake_continue_ms=""
                 if item.get("syscond_wake_continue_wall_ms") is None
                 else f"{item['syscond_wake_continue_wall_ms']:.2f}",
