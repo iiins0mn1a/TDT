@@ -470,3 +470,10 @@
 - 决策：新增独立文档 `optimization-progress/SAFPOINT-STATE-MODEL.md`，把 async continuation、host shmem lock、shim clock/current event、manager window boundary、run-control checkpoint 的状态边界写清楚。
 - 目的：停止无模型的行为试错。之后任何 overlap 实现必须先证明进入 checkpoint 前所有 async continuation drained，host shmem lock 状态稳定，managed thread `current_event` 已回到可 snapshot 状态。
 - 下一步候选：加 quiescence audit counter，而不是立即改行为。audit 应统计 pending host/thread、pending event kind、drain 后 re-enter opportunity、以及 drain 后 current event 是否可 snapshot。
+
+## 2026-05-30 quiescence audit counter
+
+- 实现：Shadow 在 perf counters 打开时，于 window boundary 前统计 `async_boundary_pending_hosts` 和 `async_boundary_pending_continuations`；TDT report 在 Async Scope Drain 表展示 boundary pending。
+- 验证：`cargo fmt --manifest-path src/main/Cargo.toml`、`python3 -m py_compile experiments/perf_model/run_perf_model.py`、Shadow `./setup build` 通过。
+- setup8 观测：`/tmp/tdt-quiescence-audit-setup8` passed=true；pending hosts drained=16982；re-enter opportunities=16982；boundary pending hosts=0；boundary pending continuations=0；windows=5605；steady=26.77x（perf counters on，不作吞吐基线）。
+- 解释：当前 scope-drain 能在 window boundary 前达到“无 pending async continuation”的最低静止点，但 re-enter opportunity 仍为 100%；因此后续若继续该路线，应审计 `current_event`/cross-host visibility，而不是继续直接重入。
