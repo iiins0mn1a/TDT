@@ -432,3 +432,21 @@
 - 恢复 goal 时的推荐第一步：不要再做随机调参。只加观测 counter：`async_scope_pending_hosts`、`async_scope_reenter_opportunities`、可选 `async_scope_drain_wall_ns`；用 setup8 perf 模型跑一轮，判断 same-window tail-drain 是否有足够机会。如果机会少，直接停止该路线；如果机会多，再实现最小 tail-drain fixed-point 原型。
 - 功能守卫仍然是：TDT 真实客户端 determinism setup 1/4/8、TDT local suite、以及本地合成 CP/restore verifier。任何 safepoint 优化只有在这些守卫不退化时才可保留。
 - 暂停结论：当前阶段没有留下半成品代码；已经提交并推送的是观测和报告能力，不是默认行为变更。下一次恢复时应从“scope-drain fixed-point 机会计数”进入，而不是从新的性能路线或应用层配置开始。
+
+## 2026-05-30 scope-drain fixed-point 机会计数
+- 决策：先加观测 counter，不直接改调度语义。Shadow 新增 `async_scope_drain_hosts`、`async_scope_reenter_opportunities`、`async_scope_drain_wall_ns`；TDT report 新增 `Async Scope Drain` 表。
+- 构建验证：`python3 -m py_compile experiments/perf_model/run_perf_model.py` 通过；Shadow `./setup build` 通过。
+- setup8 观测命令：`SHADOW_TDT_ASYNC_CONTINUE=1 SHADOW_TDT_ASYNC_SOCKET_IO=1 SHADOW_TDT_ASYNC_SCOPE_DRAIN=1 python3 experiments/perf_model/run_perf_model.py --setups 8 --trials 1 --results-dir /tmp/tdt-async-scope-opportunity-setup8 --work-root /tmp/tdt-async-scope-opportunity-work --timeout 900 --perf-counters on`。
+- 观测结果：passed=true；pending hosts drained=17196；re-enter opportunities=17196；re-enter ratio=100.00%；drain wall=12138.66ms。
+- 解释：scope-drain 后几乎每个 pending host 都还有 `< window_end` 的工作，被当前实现切到了下一轮 scheduler window。这直接解释了 async socket-I/O 下 windows 接近翻倍的问题。
+- 决策：same-window tail-drain/re-enter 候选被观测支持。下一步允许做 gated 原型，但必须默认关闭，并且必须在 pause/checkpoint 前保持 no pending async continuation。
+
+## 2026-05-30 naive same-window tail-drain 原型试错
+- 原型：新增临时 env `SHADOW_TDT_ASYNC_TAIL_DRAIN`，只在 `SHADOW_TDT_ASYNC_CONTINUE=1`、`SHADOW_TDT_ASYNC_SOCKET_IO=1`、`SHADOW_TDT_ASYNC_SCOPE_DRAIN=1` 时尝试。scope-drain 后如果 `host.next_event_time() < window_end`，就在同一个 manager window 内重新进入 `Host::execute(window_end)`。
+- 性能试跑：setup8 counters-off performance passed=true，结果目录 `/tmp/tdt-tail-drain-setup8-t1`；steady=30.68x，checkpoint=175.13ms，restore=343.24ms。这个数字只说明没有明显大幅退化，不能证明收益，因为之前 counters-off 默认样本约 30.53x，差异接近噪声。
+- 功能守卫：setup4 determinism passed=true，结果目录 `/tmp/tdt-tail-drain-det-setup4`。
+- 失败守卫：setup8 determinism failed，结果目录 `/tmp/tdt-tail-drain-det-setup8`。失败集中在 8 个 beacon stdout，stderr 和 geth/validator 对比均一致；first mismatch 是 replay 侧少了一批 `[CORE_CALL] UpdateHead 1780071292000000000`。
+- 解释：naive tail-drain 改变了 restore 后 beacon stdout 的窗口边界。虽然它可以减少 window fragmentation，但它不是语义透明的优化，不能保留为可用开关。
+- 决策：撤回 `SHADOW_TDT_ASYNC_TAIL_DRAIN` 行为代码，只保留无行为变化的机会计数 counter 和 TDT report 字段。
+- 撤回后验证：Shadow `./setup build` 通过；当前代码在 `SHADOW_TDT_ASYNC_CONTINUE=1 SHADOW_TDT_ASYNC_SOCKET_IO=1 SHADOW_TDT_ASYNC_SCOPE_DRAIN=1` 下 setup8 determinism passed=true，结果目录 `/tmp/tdt-scope-drain-current-det-setup8`。
+- 新结论：机会计数证明 fixed-point 工作量存在，但“简单同 window re-enter”会触碰 CP/restore/log determinism。下一步如果继续这条线，不能只在 manager 第二个 scope 里重入；需要更显式的 safepoint 状态机，或者更细粒度地证明哪些 continuation 能重入而不改变 post-restore observable log boundary。

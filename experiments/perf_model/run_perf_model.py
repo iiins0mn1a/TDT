@@ -52,6 +52,9 @@ SCHEDULER_COUNTER_RE = re.compile(
     r"(?:window_max_worker_body_continue_receive_wall_ns=(?P<window_max_worker_body_continue_receive_wall_ns>[0-9]+) "
     r"estimated_async_continue_overlap_savings_ns=(?P<estimated_async_continue_overlap_savings_ns>[0-9]+) "
     r"estimated_async_continue_overlap_savings_percent=(?P<estimated_async_continue_overlap_savings_percent>[0-9.]+) )?"
+    r"(?:async_scope_drain_hosts=(?P<async_scope_drain_hosts>[0-9]+) "
+    r"async_scope_reenter_opportunities=(?P<async_scope_reenter_opportunities>[0-9]+) "
+    r"async_scope_drain_wall_ns=(?P<async_scope_drain_wall_ns>[0-9]+) )?"
     r"packet_events=(?P<packet_events>[0-9]+) "
     r"local_events=(?P<local_events>[0-9]+) "
     r"cpu_delayed_events=(?P<cpu_delayed_events>[0-9]+) "
@@ -707,6 +710,15 @@ def summarize_case(case: dict[str, Any]) -> dict[str, Any]:
         "scheduler_estimated_async_continue_overlap_savings_percent": median_phase_value(
             scheduler_stats, "estimated_async_continue_overlap_savings_percent"
         ),
+        "scheduler_async_scope_drain_hosts": median_phase_value(
+            scheduler_stats, "async_scope_drain_hosts"
+        ),
+        "scheduler_async_scope_reenter_opportunities": median_phase_value(
+            scheduler_stats, "async_scope_reenter_opportunities"
+        ),
+        "scheduler_async_scope_drain_wall_ms": None
+        if median_phase_value(scheduler_stats, "async_scope_drain_wall_ns") is None
+        else median_phase_value(scheduler_stats, "async_scope_drain_wall_ns") / 1_000_000.0,
         "scheduler_packet_events": median_phase_value(scheduler_stats, "packet_events"),
         "scheduler_local_events": median_phase_value(scheduler_stats, "local_events"),
         "scheduler_cpu_delayed_events": median_phase_value(scheduler_stats, "cpu_delayed_events"),
@@ -1049,6 +1061,30 @@ def render_report(
                     "scheduler_legacy_tcp_deferred_wall_ms",
                     "scheduler_legacy_tcp_deferred_ns_per_event",
                 ),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Async Scope Drain",
+            "",
+            "| Setup | Pending hosts drained | Re-enter opportunities | Re-enter % | Drain wall ms |",
+            "| ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for item in summaries:
+        drained = item.get("scheduler_async_scope_drain_hosts")
+        reenter = item.get("scheduler_async_scope_reenter_opportunities")
+        reenter_pct = None if not drained else (reenter or 0.0) / drained * 100.0
+        lines.append(
+            "| {setup} | {drained} | {reenter} | {reenter_pct} | {drain_wall} |".format(
+                setup=item["setup"],
+                drained="" if drained is None else f"{drained:.0f}",
+                reenter="" if reenter is None else f"{reenter:.0f}",
+                reenter_pct="" if reenter_pct is None else f"{reenter_pct:.2f}",
+                drain_wall=""
+                if item.get("scheduler_async_scope_drain_wall_ms") is None
+                else f"{item['scheduler_async_scope_drain_wall_ms']:.2f}",
             )
         )
     lines.extend(
