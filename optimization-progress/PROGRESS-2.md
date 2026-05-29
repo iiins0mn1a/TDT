@@ -450,3 +450,12 @@
 - 决策：撤回 `SHADOW_TDT_ASYNC_TAIL_DRAIN` 行为代码，只保留无行为变化的机会计数 counter 和 TDT report 字段。
 - 撤回后验证：Shadow `./setup build` 通过；当前代码在 `SHADOW_TDT_ASYNC_CONTINUE=1 SHADOW_TDT_ASYNC_SOCKET_IO=1 SHADOW_TDT_ASYNC_SCOPE_DRAIN=1` 下 setup8 determinism passed=true，结果目录 `/tmp/tdt-scope-drain-current-det-setup8`。
 - 新结论：机会计数证明 fixed-point 工作量存在，但“简单同 window re-enter”会触碰 CP/restore/log determinism。下一步如果继续这条线，不能只在 manager 第二个 scope 里重入；需要更显式的 safepoint 状态机，或者更细粒度地证明哪些 continuation 能重入而不改变 post-restore observable log boundary。
+
+## 2026-05-30 getrandom async continuation 试错
+- 动机：setup8 async/inline 报告中 `getrandom(318)` continue wall 约 2.2s，且 handler 本身只消耗 host RNG 并写回用户内存，理论上比 socket/futex/epoll/close 风险低。
+- 原型：新增临时 env `SHADOW_TDT_ASYNC_GETRANDOM`，仅将 `SYS_getrandom` 加入 async eligibility；不修改 `getrandom` handler，不改应用层配置。
+- 构建验证：Shadow `./setup build` 通过。
+- 试跑命令：`SHADOW_TDT_ASYNC_CONTINUE=1 SHADOW_TDT_ASYNC_GETRANDOM=1 SHADOW_TDT_ASYNC_SCOPE_DRAIN=1 python3 experiments/perf_model/run_perf_model.py --setups 8 --trials 1 --results-dir /tmp/tdt-getrandom-async-setup8-t1 --work-root /tmp/tdt-getrandom-async-work --timeout 900 --perf-counters off`。
+- 失败结果：performance passed=false。checkpoint 已完成，但 restore 时 control socket 关闭，runner 报 `Shadow exited before socket became ready (code=-11)`；Shadow log 尾部有 `memory allocation of 138914342207488 bytes failed` 和 `memory allocation of 138914610310592 bytes failed`。
+- 解释：即使 getrandom handler 表面无 fd/网络/timer 副作用，把它跨 async continuation 边界也会在 restore 后触发状态/内存一致性问题。它不是可保留的低风险优化。
+- 决策：撤回 `SHADOW_TDT_ASYNC_GETRANDOM` 行为代码。当前保留的仍只有 scope-drain 机会计数，不包含 getrandom async。
