@@ -248,3 +248,47 @@
 - 与最早报告数字对比：setup1 checkpoint 332.14ms -> 148.86ms，restore 170.44ms -> 88.42ms；setup4 checkpoint 3489.38ms -> 126.17ms，restore 403.19ms -> 189.37ms；setup8 checkpoint 7799.97ms -> 185.26ms，restore 551.80ms -> 346.23ms。
 - 当前性能主矛盾仍未变：setup8 managed continue receive=13006.41ms，占 worker body wall 60.5%；Managed Continue Exchanges 中 SyscallComplete->Syscall 551329 次、receive=12741.62ms，是主导项。packet/event queue 不是主瓶颈。
 - 收尾状态：默认路径 suite 通过、共识语义正常、失败异步原型已移除。下一次 resume 应优先完善窗口边界诊断和继续研究能保持同步 resume 语义的 managed-thread continue 压缩方案。
+
+## 2026-05-29 async continue safepoint 分支启动
+- 已固化稳定 baseline：Shadow `33237a152 Preserve TDT checkpoint restore baseline` 已推送到 `spike-network-restore-protocol-rewrite`；TDT `bd00382 Add TDT local suite and performance guard` 已推送到 `main`。
+- 已进入探索分支：Shadow 与 TDT 均为 `explore/async-continue-safepoint`。
+- 本阶段只探索 managed-thread `SyscallComplete -> next Syscall` 异步化与 safepoint/drain，不展开 runahead、网络延迟、应用层配置或 packet 路线。
+- 当前主矛盾：能否增加 native 执行与 Shadow scheduler 的重叠，同时保持同步 resume 链的事件顺序与 checkpoint/restore 静止点。
+- 设计约束：不能把 next syscall 简单改成普通 local event，否则同 host 其它事件可能插队；checkpoint/pause 前必须 drain 到无 native in-flight。
+
+## 2026-05-29 async continue 原型补丁
+- 实现了默认关闭的 `SHADOW_TDT_ASYNC_CONTINUE` 实验开关。默认路径仍使用同步 `continue_plugin`，不改变 baseline。
+- async 路线只覆盖 syscall 完成后的 `SyscallComplete` / `SyscallDoNative`，不覆盖 start、clone child、post-restore refresh 等更复杂路径。
+- 添加了 host 级 pending continuation 队列：native 线程运行期间 host shmem lock 被释放，scheduler 不能继续执行该 host 的普通事件。
+- scheduler 在本 worker 扫描其它 host 后，必须 drain 所有 pending continuation；drain 时先接收 shim 事件、重新 lock shmem、更新 `Worker::current_time`，再直接重入 `Host::resume`。
+- checkpoint 防线：`runtime_snapshot()` 断言不能在 managed thread async in-flight 时执行。
+- 这一步的判定标准：默认关闭必须通过构建和 guard；开启后 setup1 若出现确定性/CP restore 语义问题，则记录为路线风险而不是硬调参。
+
+## 2026-05-29 async continue 试错：drain scope
+- 第一次 async-on setup1 失败：只有 `tdt-async-continue begin`，没有 complete；应用日志全空，Shadow 很快到 sim end。
+- 定位原因：我把 drain 放进同一个消费式 `HostIter` 的第二次遍历，第二次遍历实际为空，所以 pending native 从未 drain。
+- 修正：将 drain 移到第一个 scheduler scope 之后的独立 scheduler drain scope，并只在 `SHADOW_TDT_ASYNC_CONTINUE=1` 时启用，避免 default-off 增加额外扫描成本。
+- 第二次 async-on setup1 进入 begin/complete/re-enter，但 panic 于 `record_async_continuation` 的 pending 队列 `RefCell already borrowed`。
+- 定位原因：`while let Some(...) = self.async_continuations.borrow_mut().pop_front()` 的临时 borrow 覆盖了循环体，直接重入 `Host::resume` 时再次 append pending 触发借用冲突。
+- 修正：将 pop_front 的 borrow 限定在单独语句中，进入循环体前释放。
+
+## 2026-05-29 async continue 试错：收窄 SyscallDoNative
+- 修复 borrow 后，async-on setup1 不再早期崩溃，geth 与 validator 有日志，但没有达到 ready：beacon 启动脚本日志全空，validator 持续连接 `11.0.0.0:4000` 超时。
+- 语义判断：`SyscallDoNative` 涉及真实内核副作用和进程状态变化，比纯 `SyscallComplete` 更容易破坏 shell/exec 启动链；这属于主路线内部的复杂边，不是调参问题。
+- 新试验：暂时只异步化 `SyscallComplete`，不异步化 `SyscallDoNative`。目标是先证明纯 Shadow-handled syscall completion 的 async/drain 是否能保持真实客户端 liveness。
+
+## 2026-05-29 async continue 试错：事件循环类 syscall 白名单
+- `SyscallComplete` 全量 async 仍未达到 ready。关键证据：start_beacon 脚本执行到 `write(1, ..., 29)`，但 stdout 文件为空，说明启动链/stdio/进程控制路径对异步重入敏感。
+- 为避免把风险归因成调参，本次改为语义白名单：只允许 epoll/poll/futex/select/nanosleep 等事件循环等待类 syscall completion 异步化。
+- 这条白名单的理由：目标是重叠等待后应用继续执行到下一次 syscall 的时间，而不是改写 fork/exec/write/open 这类启动与文件副作用路径。
+
+## 2026-05-29 async continue default-off 复核与阶段结论
+- 复核刚才完整 suite 中 setup1 偶发失败：用同一份 `/tmp/tdt-async-defaultoff-suite/local-suite-experiment.toml` 单独重跑 setup1，结果 `/tmp/tdt-async-defaultoff-setup1-suiteconfig-rerun/determinism-setup-1.json` 为 `passed=true`，3 个真实客户端比较全部一致，checkpoint=146.33ms，restore=87.87ms。
+- 再跑完整 default-off suite `/tmp/tdt-async-defaultoff-suite-rerun2`，最终输出 `YES`。真实客户端 determinism setup1/setup4/setup8 全通过，6 个 synthetic CP/restore 全通过，reference-performance 通过。
+- 本轮 suite determinism 数据：setup1 checkpoint=147.12ms restore=79.56ms comparisons=3 mismatches=0；setup4 checkpoint=130.08ms restore=196.30ms comparisons=9 mismatches=0；setup8 checkpoint=166.00ms restore=342.83ms comparisons=17 mismatches=0。
+- 本轮 ready 语义：setup8 中 8 个 beacon 都完成 state transition/synced block=7；geth head/import=7、payload=9；8 个 validator 都持续提交 sync message，且多个 validator 提交 block。判断 default-off 测试网仍能推进共识语义。
+- 本轮 performance 数据：setup1 steady=39.50x checkpoint=139.93ms restore=107.44ms；setup4 steady=35.51x checkpoint=135.78ms restore=194.91ms；setup8 steady=31.10x checkpoint=159.84ms restore=338.77ms。
+- 性能主矛盾证据仍一致：setup8 worker body receive=13230.93ms，占 worker body wall 60.3%；Managed Continue Exchanges 中 `SyscallComplete -> Syscall` 为 543825 次，receive=12967.81ms，是最大项。
+- async-on 事件循环白名单试验 `/tmp/tdt-async-on-setup1-eventlooponly` 达到 liveness，但 determinism 失败：geth payload `delivery` 变 `timeout`，beacon block build slot 10 出现约 0.8s 差异，validator 从提交 block 变成 EL payload timeout。
+- 决策：当前 async continue 路线不能进入默认路径或声称优化成功。主原因不是 liveness，而是 drain/重入顺序仍会改变真实客户端 replay timeline。下一步若继续该方向，必须先设计 deterministic ordered drain barrier，再谈性能收益。
+- 保护线：当前探索补丁默认关闭，default-off 完整 suite 已通过；稳定 baseline 已在远程 `spike-network-restore-protocol-rewrite` 和 TDT `main` 保存。
