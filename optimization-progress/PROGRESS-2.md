@@ -292,3 +292,18 @@
 - async-on 事件循环白名单试验 `/tmp/tdt-async-on-setup1-eventlooponly` 达到 liveness，但 determinism 失败：geth payload `delivery` 变 `timeout`，beacon block build slot 10 出现约 0.8s 差异，validator 从提交 block 变成 EL payload timeout。
 - 决策：当前 async continue 路线不能进入默认路径或声称优化成功。主原因不是 liveness，而是 drain/重入顺序仍会改变真实客户端 replay timeline。下一步若继续该方向，必须先设计 deterministic ordered drain barrier，再谈性能收益。
 - 保护线：当前探索补丁默认关闭，default-off 完整 suite 已通过；稳定 baseline 已在远程 `spike-network-restore-protocol-rewrite` 和 TDT `main` 保存。
+
+## 2026-05-29 async continue 第二轮：immediate drain 与 readiness-only 边界
+- 本轮主矛盾：继续只探索 `SyscallComplete -> next Syscall` async overlap，目标是找出能保持 determinism 的 safepoint/drain 语义；不改应用层配置、不改 runahead、不动网络延迟。
+- subagent 尝试：线程池已满，无法新开 read-only explorer。本轮由主 session 本地完成关键路径判断，没有展开额外路线。
+- 实现：新增 `SHADOW_TDT_ASYNC_SCOPE_DRAIN`。默认 `SHADOW_TDT_ASYNC_CONTINUE=1` 时改为 host execute 返回后 immediate drain；只有额外设置 scope drain 开关才保留旧的 scheduler-scope 延迟 drain。
+- 结果：`/tmp/tdt-async-immediate-on-setup1` 仍 `passed=false`，首个 mismatch 与上一轮同类：geth payload `delivery` -> `timeout`，beacon slot 10 build time 约 1.3s -> 2.1s，validator 提交 block -> EL payload timeout。
+- 结论：确定性失败不只是 scope 级 drain 太晚；async begin/complete 机制本身或可异步 syscall 边界仍改变 replay timeline。
+- 语义收窄：将 async 白名单从 epoll/poll/select/futex/nanosleep 缩到 readiness wait 类：epoll/poll/select，排除 futex 和 sleep 类 syscall，因为它们携带同步或时间状态。
+- readiness-only 结果 1：`/tmp/tdt-async-readiness-on-setup1` 在 restore 时 Shadow abort，panic 位于 `Host::schedule_task_with_delay()` 对 `Worker::current_time()` 的 unwrap。说明这个边界暴露了 checkpoint replay 期间无 worker current_time 但仍按 delay 调度任务的恢复期脆弱点。
+- 修复尝试：`schedule_task_with_delay()` 在 `Worker::current_time()` 缺失时，用 event queue 的 `last_popped_event_time()` 作为基准。这只影响没有 current worker time 的恢复/重建路径。
+- readiness-only 结果 2：`/tmp/tdt-async-readiness-fallback-on-setup1` 不再是同一个 unwrap panic，但 restore 仍失败，Shadow code=-11，说明恢复期状态仍不满足 async readiness-only 路线的安全条件。
+- default-off 保护线：`/tmp/tdt-async-fallback-defaultoff-suite` 完整 suite 输出 `YES`。真实客户端 determinism setup1/setup4/setup8 全通过；6 个 synthetic CP/restore 全通过；reference-performance 通过。
+- default-off determinism 数据：setup1 checkpoint=146.39ms restore=82.17ms mismatches=0；setup4 checkpoint=131.42ms restore=194.14ms mismatches=0；setup8 checkpoint=171.56ms restore=366.51ms mismatches=0。
+- default-off performance：setup1 steady=42.95x checkpoint=144.29ms restore=88.01ms；setup4 steady=40.36x checkpoint=143.87ms restore=196.71ms；setup8 steady=32.75x checkpoint=212.60ms restore=614.75ms。
+- 当前判断：async continue 方向仍是主性能矛盾的合理路线，但简单 host-level async 不满足 CP/restore determinism。下一步不能继续收窄白名单式调参；应转向显式定义 async safepoint 状态机，或者寻找不释放同步 resume 语义的更小 overlap 点。
