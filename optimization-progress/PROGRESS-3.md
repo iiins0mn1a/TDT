@@ -77,3 +77,22 @@
 - 回退后默认 setup8 guard：`/tmp/tdt-post-async-revert-off-s8`，`passed=true`；steady `31.23x`，checkpoint `199.01 ms`，restore `343.15 ms`。
 - 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=28` / `Finished applying state transition=28`，geth `Chain head was updated=28`。
 
+## 2026-05-31 当前稳定分支 counters-on 复测
+
+- 当前稳定分支 setup8 counters-on：`/tmp/tdt-current-counters-on-s8`，`passed=true`。
+- 性能点：elapsed `12.40s`，sim/wall `29.04x`，steady `31.30x`，checkpoint `171.56 ms`，restore `348.77 ms`。
+- 调度统计：parallelism `6`，windows `2956`，worker busy `39.68%`，scheduler scope wall `9019.49 ms`。
+- native reply 仍是主瓶颈：worker body continue receive `12752.98 ms`，占 worker body `59.27%`；最慢 worker body continue receive pct 可到 `79.32%`。
+- 模型估算：如果能在窗口内重叠 native receive，理论 async overlap savings `4003.62 ms`，约 `44.39%` scheduler scope；说明主矛盾仍然成立。
+- 但上一轮试错说明：这个收益不能靠同一时间重试拿到，必须要 readiness 通知或窗口级批量 drain。
+
+## 2026-05-31 readiness bridge 只读审计
+
+- subagent 审计结论：`SelfContainedChannel::wait_ready_assuming_single_consumer()` 可以不消费地等待 `Ready`，但它仍占用 single-consumer 角色，不能作为旁路 observer 和 scheduler 线程上的 `try_receive/receive` 并行使用。
+- 当前 scheduler/manager 没有现成“外部线程把 host/thread 标为 ready 并唤醒 scheduler”的 API；`Host` 内部大量 `RefCell/RootedRc` 假定由 scheduler worker 持有，helper thread 不能直接操作 `Host` 或 `EventQueue`。
+- run-control 的 `Condvar` 和 scheduler pool 的 `ThreadUnparker` 只负责 window boundary 或线程池任务启动，不是 simulated-time readiness 层。
+- helper thread 方案如果继续，需要新增一个小的 readiness bridge：helper 只能写 `{host_id,pid,tid,seq}` 到独立队列；manager/scheduler 按确定性顺序 drain，真正操作 host 的仍必须是 scheduler worker。
+- CP/restore 边界：checkpoint 前必须保证没有 helper 未 join、没有 pending token、没有 ready-but-unconsumed reply、没有丢失 wake event；否则仍会违反 `Parked + IPC empty + current_event updated` 的静止点。
+- 因此下一条候选不是“直接 helper 操作 host”，而是两种更小的方向：
+  1. 窗口级批量 drain：pending 后先让 worker 处理其它 host，window/scope 末尾集中完成 pending reply。
+  2. 新增确定性 readiness bridge：helper 只等待 futex ready 并提交 token，manager 统一排序后投递 continuation。
