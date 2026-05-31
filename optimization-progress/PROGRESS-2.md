@@ -383,3 +383,64 @@
   - checkpoint=229.41ms
   - restore=357.91ms
 - 决策：当前保留的 shadow 代码只有 `wait_ready_assuming_single_consumer` 构件；失败的 idle guard 已作为反例记录。下一步若实现 ready bridge，应优先 producer-side notification，避免引入 Shadow-side sleeper 半状态。
+
+## 2026-05-31 phase3 路线审计：eventfd 通知语义风险
+
+- 我继续审计了 producer-side ready notification 的载体选择。
+- eventfd 优点：Shadow 可以 epoll，producer shim 在 `ipc.to_shadow().send(...)` 后写 eventfd，scheduler 仍作为唯一 consumer 读取 channel。
+- 但当前 spawn 路径显示，managed process 只通过 stdin pipe 接收 `IPCData` shmem descriptor；额外 fd 如果要让 shim 写入，就必须存在于被模拟进程 fd table。
+  - 主进程 spawn 路径：`ManagedThread::spawn_native()` 使用 `posix_spawn_file_actions_adddup2()` 设置 stdin/stdout/stderr/strace。
+  - 如果新增 eventfd，除非实现完整隐藏层，否则应用可通过 fd 分配或 `/proc/self/fd` 观察到额外 fd。
+- 结论：eventfd producer-side notification 不满足“不改变应用层语义”的硬约束，暂不进入实现候选。
+- shared-memory atomic/futex 路线不污染应用 fd table，但单个 futex 不能自然 multiplex 多个 native replies；如果要真正减少 worker 阻塞，仍需要 Shadow-side ready bridge 或 futex_waitv 类聚合。
+- 当前策略：
+  - 保留 wait-ready 原语作为构件。
+  - 不做 eventfd 快捷实现。
+  - 让 sidecar 只读分析 scheduler/ManagedThread 中 native reply continuation 的最小接入点。
+  - 主线只接受能显式建模 in-flight reply、并能在 checkpoint 前 drain 到 Parked 的方案。
+
+## 2026-05-31 phase3 scheduler 接入初步判断
+
+- 我本地继续审计了 `ManagedThread::resume()`、`Thread::resume()`、`Process::resume()` 和 host local task 调度路径。
+- 当前同步路径是：
+  - `Process::resume()` 调 `Thread::resume()`
+  - `Thread::resume()` 调 `ManagedThread::resume()`
+  - `ManagedThread::resume()` 在 `continue_plugin()` 内直接阻塞等待 shim reply
+  - 返回后才形成 `Blocked/ExitedThread/ExitedProcess`
+- 如果异步化，理论上要新增一个类似 `NativeReplyInFlight` 的中间状态，让 `Process::resume()` 尽快返回并允许 worker 执行其它 host/thread。
+- 但这不是只改 enum 就能完成：
+  - helper/通知线程不能直接调用 `host.resume()`，否则跨线程进入 Host/Process/RootedRc 语义不清楚。
+  - ready 事件必须作为事实集合进入调度器，由 Shadow worker 在确定性顺序下消费。
+  - 需要记录 begin 时的模拟时间，ready continuation 应以稳定方式回到 event queue，而不是后台线程按 OS 唤醒顺序执行。
+- 当前最小可行模型更像：
+  - `begin_continue_plugin()` 创建 in-flight token，记录 pid/tid/host/time/sequence。
+  - native/shim reply ready 后只写入 ready fact。
+  - scheduler 在窗口内或窗口边界按稳定 key drain ready facts，调度 `ResumeProcess` 或专用 `NativeReplyContinuation` task。
+  - checkpoint 前必须 drain 所有 in-flight native replies 到 `Parked`，或者拒绝 checkpoint 并让 run-control 继续到 safepoint。
+- 这说明性能方向仍成立，但实现复杂度高于 “加一个 notifier”。下一步等待 sidecar 对 scheduler 接入点的只读结论，避免主线盲目改大结构。
+
+## 2026-05-31 phase3 sidecar 结论整合：最小 async 边界
+
+- sidecar 对 scheduler/ManagedThread 路径的只读分析返回，结论与本地审计一致。
+- 最小接入点：
+  - `ManagedThread::begin_continue_plugin()` 之后、`finish_continue_plugin_blocking()` 之前。
+  - 这里已经完成 shim clock 更新、`host.unlock_shmem()`、`NativeRunPhase::WaitingForShimReply`、向 shim 发送事件。
+  - 当前同步瓶颈就是下一步马上阻塞在 `finish_continue_plugin_blocking()`。
+- 需要新增的最小抽象：
+  - `NativeReplyPending` 结果向上传播：`ManagedThread::resume()` -> `Thread::resume()` -> `Process::resume()` -> `Host::execute()`。
+  - `pending_native_reply_token` 显式保存 in-flight token。
+  - `poll_continue_plugin_reply()` 或 `try_finish_native_reply()` 拆出现在的 receive/lock/time-update/Parked 后半段。
+  - `NativeReplyContinuation` local task，用稳定 pid/tid 回到 Shadow worker。
+- 硬边界：
+  - 第一版只允许 overlap other hosts，不允许同一 host 继续执行其它事件。
+  - 原因：manager 在 host execute 前持 host shmem lock；`begin_continue_plugin()` 已释放该 lock。若异步返回后 manager 仍无条件 unlock，会破坏锁状态。
+  - 因此 `Host::execute()` 需要知道自己是因 native reply pending 提前 yield，而不是正常完成。
+- CP/restore 边界：
+  - 不序列化 in-flight native reply。
+  - checkpoint 前必须统一 drain 所有 in-flight native replies 到 `Parked`。
+  - 现有 `runtime_snapshot()` 和 `current_event_bytes()` 已经要求 `NativeRunPhase::Parked`；这条防线应保留。
+- 最小实验不做：
+  - 不做 eventfd producer notifier，因为隐藏 fd 语义不干净。
+  - 不做同 host 继续执行。
+  - 不做 busy-poll 热循环。
+- 当前判断：这是符合主要矛盾的路线，但不是小补丁；下一步若继续，应先做“只支持 other-host overlap 的 async native reply 骨架”，并以 setup8 counters-on/off 和 determinism suite 作为硬 gate。
