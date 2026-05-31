@@ -25,3 +25,28 @@
 - 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=26` / `Finished applying state transition=26`，geth `Chain head was updated=26`，说明测试网继续推进。
 - 结论：这是一个行为保持的结构铺垫，不预期带来性能收益；当前结果没有显示功能或确定性风险。
 
+## 2026-05-31 CP/restore 静止点审计
+
+- 让 subagent 只读审计了 `ManagedThread` native reply pending 与 checkpoint/restore 的冲突边界。
+- 结论：该方向没有被直接否定，但 checkpoint 格式当前只表达 Shadow 已重新拥有协议控制权的状态，也就是 `native_run_phase == Parked`、IPC channel 为空、`current_event` 已经更新。
+- 因此未来如允许 `NativeReplyPending` 返回 manager，checkpoint 前必须 drain 所有 pending native reply 回到现有静止点；第一阶段不序列化半交换状态。
+- 关键风险：如果 Shadow 已发送 `ShimEventToShim` 但还没收到 reply 就 snapshot，restore 后 `current_event_bytes` 会仍然表示旧事件，协议两端错位。
+- 本轮继续只打通返回通道，不让 pending 实际发生；这样仍是行为保持改造。
+
+## 2026-05-31 Task/Resume pending 返回通道
+
+- 增加 `TaskExecutionResult::{Complete, NativeReplyPending}`，让 `TaskRef::execute()` 可以向 `Host::execute()` 回传执行结果。
+- 增加 `TaskRef::new_with_result_and_descriptor()`；原有 `TaskRef::new()` 和 `new_with_descriptor()` 仍包装成 `Complete`，保持既有接口可用。
+- 在 `ManagedThread::ResumeResult`、`Thread::ResumeResult`、`Process::ResumeResult` 中加入 `NativeReplyPending`，并把返回链打到 `Host::resume()`。
+- `Host::execute()` 在 local task 返回 `NativeReplyPending` 时设置 `host_shmem_unlocked_on_return=true` 并停止执行该 host。本轮还没有实际构造 pending，因此同步行为不应变化。
+- 只让明确的 `ResumeProcess` task 具备向上回传 pending 的能力；其它 restore/helper task 暂时仍通过旧 API 返回 `Complete`，避免把半成品语义扩散到 checkpoint reconstruction helper。
+
+### 验证结果
+
+- `cargo test --manifest-path src/Cargo.toml -p shadow-rs --lib host::managed_thread`：编译通过；该过滤条件下 0 个测试实际执行；只有既有 warning。
+- `./setup build`：通过。
+- setup 8 counters-off 探针：`/tmp/tdt-task-result-route-off-s8`，`passed=true`。
+- 本次性能点：elapsed `12.20s`，sim/wall `29.52x`，steady `31.91x`，checkpoint `173.13 ms`，restore `359.24 ms`。
+- 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=28` / `Finished applying state transition=28`，geth `Chain head was updated=28`，说明测试网继续推进。
+- 结论：返回通道 plumbing 已通过真实客户端 setup 8 guard；本步不是性能收益点，而是为下一步实现 pending completion/drain 做结构准备。
+
