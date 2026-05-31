@@ -50,3 +50,18 @@
 - 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=28` / `Finished applying state transition=28`，geth `Chain head was updated=28`，说明测试网继续推进。
 - 结论：返回通道 plumbing 已通过真实客户端 setup 8 guard；本步不是性能收益点，而是为下一步实现 pending completion/drain 做结构准备。
 
+## 2026-05-31 pending native run checkpoint guard
+
+- 在 `ManagedThread` 中增加 `pending_native_run: RefCell<Option<NativeRunToken>>`，当前初始化为 `None`，暂不实际填充。
+- 扩展 `assert_shadow_owned_safepoint()`：checkpoint snapshot 前除了要求 `native_run_phase == Parked` 和 IPC channel 为空，也要求 `pending_native_run` 为空。
+- 这个改动把 subagent 审计提出的 CP/restore 硬边界写进代码：未来真正让 native reply pending 返回 manager 时，如果没有先 drain，checkpoint 会在语义边界上失败，而不是悄悄序列化半交换状态。
+
+### 验证结果
+
+- `cargo test --manifest-path src/Cargo.toml -p shadow-rs --lib host::managed_thread`：编译通过；该过滤条件下 0 个测试实际执行；只有既有 warning。
+- `./setup build`：通过。
+- setup 8 counters-off 探针：`/tmp/tdt-pending-guard-off-s8`，`passed=true`。
+- 本次性能点：elapsed `11.89s`，sim/wall `30.27x`，steady `32.76x`，checkpoint `169.32 ms`，restore `358.69 ms`。
+- 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=27` / `Finished applying state transition=27`，geth `Chain head was updated=27`，说明测试网继续推进。
+- 结论：guard 本身不带来性能收益，但明确了 async pending 路线不能绕过的 CP/restore 静止点。
+
