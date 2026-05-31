@@ -65,3 +65,15 @@
 - 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=27` / `Finished applying state transition=27`，geth `Chain head was updated=27`，说明测试网继续推进。
 - 结论：guard 本身不带来性能收益，但明确了 async pending 路线不能绕过的 CP/restore 静止点。
 
+## 2026-05-31 opt-in async native reply 试错
+
+- 尝试实现 `SHADOW_TDT_ASYNC_NATIVE_REPLY=1` 开关：`ManagedThread::continue_plugin()` 先发送 shim 命令并保存 `NativeRunToken`，让 resume 返回 `NativeReplyPending`；下一次 resume 时再阻塞完成 receive/finish/current_event update。
+- 第一次 setup 8 opt-in 失败：`/tmp/tdt-async-native-on-s8`，Shadow 在 `host.unlock_shmem()` 断言失败。原因是仍有旧 `TaskRef::new_with_descriptor` 路径吞掉了 `host.resume()` 的 pending 返回值，manager 以为 host shmem 仍持锁。
+- 修复返回通道覆盖后第二次 opt-in 试验：`/tmp/tdt-async-native-on2-s8`。问题变成大量重复 geth 进程。原因是把 pending retry 放在 `Host::execute()` 层会重放整个 local task；对 `StartApplication` 来说这会重复 spawn 应用。
+- 将 retry 责任下移到 `Host::resume(pid, tid)` 后第三次 opt-in：`/tmp/tdt-async-native-on3-s8`。重复 spawn 消失，但 Shadow 长时间停留在初始 simtime，CPU 接近满载，吞吐严重退化；该实验在 60 秒仍未完成 setup8 的第一个 60 秒 continue，手动停止。
+- 结论：没有外部 readiness 通知时，“pending 后同一 simulated time 重试”会退化为忙轮询/极高频 scheduler window，抵消并超过 native wait overlap 的收益。这条具体实现路线判负，不提交。
+- 保留的 insight：要继续这条主矛盾，必须引入低开销 readiness 通知或批量 drain 机制；否则不能只靠 event queue 的同时间重试。
+- 已回退未提交的 opt-in 实验代码，保留此前已验证并推送的结构铺垫提交。
+- 回退后默认 setup8 guard：`/tmp/tdt-post-async-revert-off-s8`，`passed=true`；steady `31.23x`，checkpoint `199.01 ms`，restore `343.15 ms`。
+- 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=28` / `Finished applying state transition=28`，geth `Chain head was updated=28`。
+
