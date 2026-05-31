@@ -337,3 +337,49 @@
 - 可保留代码动作：给 `SelfContainedChannel` 增加只读 `is_empty()`，给 `IPCData` 增加 `channels_are_empty()`，并在 `ManagedThread::assert_shadow_owned_safepoint()` 中要求 snapshot 时双向 IPC channel 都为空。这样把 `ipc_rebuild.rs` 的 Empty-channel 假设推进成运行时 guard。
 - 验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过；真实客户端 setup8 counters-off `/tmp/tdt-ipc-empty-guard-off-setup8-t1-20260531` 通过，steady=31.92x。
 - 下一步：若继续异步方向，需要先实现最小 ready bridge，而不是继续在 task 层忙等。候选机制包括：`SelfContainedChannel` 暴露 wait-ready-no-consume API + helper thread，或 IPC 增加 eventfd/notifier；无论哪种，ready 只能作为事实集合，消费顺序必须由 Shadow 稳定 key 控制。
+## 2026-05-31 phase3 分支：ready-bridge 构件收束
+
+- 基于当前稳定分支新建两个对应分支：
+  - TDT: `explore/main-perf-phase3-ready-bridge-20260531`
+  - shadow: `explore/main-perf-phase3-ready-bridge-20260531`
+- 主矛盾保持不变：真实瓶颈不是 runahead 调参，而是 native-thread reply wait 让 Shadow worker 被绑定到单个 native thread，限制可重叠执行的空间。
+- 当前局部决策：先收束 `SelfContainedChannel::wait_ready_assuming_single_consumer`，作为未来 ready-bridge 的最小构件。它只等待 ready/closed，不消费消息，因此本身不是性能优化。
+- 安全边界：该 API 仍要求单 consumer；未来如果引入后台 helper，helper 和 scheduler 不能并发 wait/receive，必须设计显式交接状态，否则 checkpoint 可能落在半状态。
+- 已验证：
+  - `cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests`: 13/13 passed
+  - `./setup build`: passed，仅有既有 warning
+  - setup8 counters-off 探针：`/tmp/tdt-wait-ready-api-off-setup8-t1-20260531`
+- 探针结果：
+  - passed=true
+  - elapsed=12.87s
+  - simulated_seconds_per_wall_second=27.96x
+  - steady_simulated_seconds_per_wall_second=30.47x
+  - checkpoint=167.34ms
+  - restore=687.65ms
+- 解释：该构件没有接入调度器，所以性能不应改善；本次 setup8 steady 低于 phase2 guard 的 31.92x/32.66x，按单次噪声处理，不作为负优化证据。
+- 下一步只允许进入一个方向：Shadow-owned ready bridge。禁止退回 busy-poll task 或网络延迟调参。
+
+## 2026-05-31 phase3 反例：过宽 IPC sleeper guard 被否决
+
+- sidecar 审计指出：如果未来引入 Shadow-side helper 并让它在 `wait_ready_assuming_single_consumer` 中睡眠，那么 `Empty + has_sleeper` 不能被当成可 checkpoint 的干净状态。
+- 我做了一个局部试错：新增 `is_empty_and_unwatched()`，并让 `ManagedThread::assert_shadow_owned_safepoint()` 要求 IPC channel 无消息且无 sleeper。
+- 结果：该 guard 破坏现有真实客户端 CP 路径，setup8 counters-off 失败。
+  - 失败目录：`/tmp/tdt-ipc-idle-guard-off-setup8-t1-20260531`
+  - 失败点：checkpoint 时多个 `runtime_snapshot` 触发 `ManagedThread checkpoint state requested with non-idle IPC channel`
+  - 代表日志：`performance.log` 中多个 pid/tid 在 checkpoint snapshot 阶段命中 `managed_thread.rs:503`
+- 解释：现有 managed shim 线程本来可以睡在 IPC channel 上；这些 native/shim 线程属于 CRIU dump 的对象，restore 后 sleeper 状态可以由 CRIU恢复。因此“任何 sleeper 都不是静止点”的判定是错误的。
+- 主线结论：
+  - 不能把现有 `has_sleeper` 一刀切纳入 CP 禁止条件。
+  - 真正危险的是未来 Shadow-side helper 的 sleeper，因为 helper 不属于被模拟进程的 CRIU restore 语义。
+  - helper 路线需要单独显式状态，而不是复用 channel 内部 sleeper 位做静止点判断。
+  - 更稳的路线是 producer-side ready notification：shim 在 send 后发 Shadow-only sideband ready，scheduler 仍作为唯一消费者读取 channel。
+- 处理：撤回该 guard，不提交。重建当前 phase3 分支 binary 后重新跑 setup8。
+- 恢复验证：
+  - 目录：`/tmp/tdt-wait-ready-rebuilt-off-setup8-t1-20260531`
+  - passed=true
+  - elapsed=11.80s
+  - simulated_seconds_per_wall_second=30.52x
+  - steady_simulated_seconds_per_wall_second=32.69x
+  - checkpoint=229.41ms
+  - restore=357.91ms
+- 决策：当前保留的 shadow 代码只有 `wait_ready_assuming_single_consumer` 构件；失败的 idle guard 已作为反例记录。下一步若实现 ready bridge，应优先 producer-side notification，避免引入 Shadow-side sleeper 半状态。
