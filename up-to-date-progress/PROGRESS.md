@@ -125,3 +125,11 @@ geth `v1.17.3` 已经从源码构建到 `deps/go-ethereum-v1.17.3/build/bin/geth
 证据：TDT 分支 up-to-date 已提交 abbaa7c，提交内容包括新 geth/Prysm submodule、up-to-date 专用链配置、genesis、TDT 配置、编排器兼容改动，以及这个独立进度文件。随后已推送到 origin/up-to-date，并设置本地分支跟踪该远程分支。
 
 状态：Shadow 的 up-to-date 分支没有为了新客户端额外修改内核代码；当前只需要 TDT 侧的编排和配置适配即可让 smoke 与 cp/restore 通过。
+
+## 2026-06-01 Shadow 分支确认
+
+结论：Shadow fork 的 up-to-date 分支也已确认可恢复。
+
+证据：deps/shadow 当前在 up-to-date，提交为 33237a152；push -u origin up-to-date 返回 Everything up-to-date，并将本地分支设置为跟踪 origin/up-to-date。TDT 本次适配没有引入新的 Shadow 代码改动。
+
+备注：deps/shadow 内仍有未跟踪的 src/test/signal/shadow.data/ 测试产物，未纳入 TDT 提交。
