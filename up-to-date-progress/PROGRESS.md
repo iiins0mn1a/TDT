@@ -133,3 +133,13 @@ geth `v1.17.3` 已经从源码构建到 `deps/go-ethereum-v1.17.3/build/bin/geth
 证据：deps/shadow 当前在 up-to-date，提交为 33237a152；push -u origin up-to-date 返回 Everything up-to-date，并将本地分支设置为跟踪 origin/up-to-date。TDT 本次适配没有引入新的 Shadow 代码改动。
 
 备注：deps/shadow 内仍有未跟踪的 src/test/signal/shadow.data/ 测试产物，未纳入 TDT 提交。
+
+## 2026-06-01 官方版本与配置依据复核
+
+结论：当前 up-to-date 分支使用的 geth v1.17.3 和 Prysm v7.1.4 仍然符合“最新稳定客户端”的目标。
+
+证据：geth 官方下载页显示当前 stable release 为 v1.17.3，commit 117e067f；Prysm GitHub releases 显示 v7.1.4 为 Latest，tag commit 1756380。TDT submodule 当前正好固定到这两个 commit。
+
+配置含义：Prysm v7.1.4 release 明确包含 Gloas/Fulu 相关推进和性能修复；这解释了升级时必须显式声明后续 fork version/epoch，避免 testnet config 继承 mainnet 默认值造成 fork schedule 冲突。geth v1.17.3 对 Cancun/blobSchedule 的校验也要求 genesis JSON 明确包含 blobSchedule.cancun。
+
+下一步：开始审 Shadow upstream 最近改动，只考虑能改善 Go real-client 兼容性、确定性或性能，且能用 TDT smoke/cp-restore 证明不回退的小范围补丁。
