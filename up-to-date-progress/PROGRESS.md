@@ -117,3 +117,11 @@ geth `v1.17.3` 已经从源码构建到 `deps/go-ethereum-v1.17.3/build/bin/geth
 保留限制：这仍然沿用当前 TDT 里已知的外部状态边界，只回滚 managed external paths，即 network/ 和 beacon_peers.txt；host-side shadow.data rollback 仍不是这个里程碑的一部分。
 
 下一步：整理本次迁移改动，提交并推送 TDT 的 up-to-date 分支，使新客户端适配状态可以恢复。Shadow 的 up-to-date 分支目前没有为新客户端额外改内核代码。
+
+## 2026-06-01 远程保存
+
+结论：本次 up-to-date 迁移成果已经保存到 TDT 远程分支。
+
+证据：TDT 分支 up-to-date 已提交 abbaa7c，提交内容包括新 geth/Prysm submodule、up-to-date 专用链配置、genesis、TDT 配置、编排器兼容改动，以及这个独立进度文件。随后已推送到 origin/up-to-date，并设置本地分支跟踪该远程分支。
+
+状态：Shadow 的 up-to-date 分支没有为了新客户端额外修改内核代码；当前只需要 TDT 侧的编排和配置适配即可让 smoke 与 cp/restore 通过。
