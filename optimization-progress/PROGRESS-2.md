@@ -314,3 +314,10 @@
 - 验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过。
 - 真实客户端探针：counters-off setup8 `/tmp/tdt-token-refactor-off-setup8-t1-20260531` 通过，steady=32.68x；counters-on setup8 `/tmp/tdt-token-refactor-on-setup8-t1-20260531` 通过，continue_plugin calls=548430，try not ready=322902，post-try receive=12384.35ms，说明诊断字段仍有效。
 - 结论：这是进入异步/safepoint 原型前的结构化步骤，不主张已有吞吐收益。下一步才是最小 `ManagedThreadReceive` task 原型或先添加 checkpoint safepoint guard。
+
+## 2026-05-31 13:48 - native-run phase guard
+
+- 根据 checkpoint 子任务结论，新增 `NativeRunPhase`：`Parked`、`PostRestoreRefresh`、`WaitingForShimReply`。当前同步实现中 `begin_continue_plugin` 进入 transient phase，`finish_continue_plugin_blocking` 在重新拿回 host shmem lock 并同步 shim time 后回到 `Parked`。
+- `runtime_snapshot` 和 `current_event_bytes` 现在会 assert 当前 thread 处于 Shadow-owned `Parked` safepoint；如果未来异步原型在 token 半状态下触发 checkpoint，会立刻暴露，而不是默默序列化错误状态。
+- 这仍不是性能优化本身，而是为了后续 `ManagedThreadReceive` task 原型保护 cp/restore 语义。
+- 验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过；包含 checkpoint/restore 的真实客户端 setup8 counters-off `/tmp/tdt-phaseguard-off-setup8-t1-20260531` 通过，steady=31.95x。
