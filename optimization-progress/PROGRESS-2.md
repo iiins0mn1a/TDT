@@ -305,3 +305,12 @@
 - 解释：这不是“消息其实已经 ready，但 receive 实现慢”的假瓶颈；约 59% 的 continue 往返在 send 后确实未 ready，绝大多数等待时间发生在 post-try blocking receive。produce-consume / NativeRunToken / safepoint 状态机方向值得继续，但必须按确定性顺序处理 ready token，不能按 OS ready 顺序消费。
 - counters-off setup8 单轮 `/tmp/tdt-tryrecv-off-setup8-t1-20260531` 通过，steady=32.01x，报告中 counters 为空，确认默认吞吐口径仍可用。
 - 下一步候选：先设计显式 `WaitingForShimReply`/`NativeRunToken` 的最小状态模型和 checkpoint 静止点规则；在真正异步之前，避免继续做外围微优化。
+
+## 2026-05-31 13:45 - NativeRunToken 等价重构
+
+- 主线决策：不直接序列化 `WaitingForShimReply` / `NativeRunToken`，而是把它们视为 checkpoint-forbidden transient state；checkpoint 请求应推进到 Shadow-owned parked safepoint。Helmholtz 子任务确认这与 `ipc_rebuild.rs` 的 Empty-channel 假设一致。
+- scheduler 接入判断：Boyle 子任务确认最小接入点应是 host-local event queue + ManagedThread finish receive；token 挂在 `ManagedThread` 协议状态上，未来 `ManagedThreadReceive` task 必须按 Shadow 稳定 event_id/稳定 key 排序，不能按 OS ready 顺序消费。
+- 本轮代码动作：在 shadow `src/main/host/managed_thread.rs` 中把 `continue_plugin` 拆成 `begin_continue_plugin` 和 `finish_continue_plugin_blocking`，新增栈上 `NativeRunToken` 保存 sent kind、perf start、prepare/send wall time。当前行为仍是 blocking finish，不改变模拟语义。
+- 验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过。
+- 真实客户端探针：counters-off setup8 `/tmp/tdt-token-refactor-off-setup8-t1-20260531` 通过，steady=32.68x；counters-on setup8 `/tmp/tdt-token-refactor-on-setup8-t1-20260531` 通过，continue_plugin calls=548430，try not ready=322902，post-try receive=12384.35ms，说明诊断字段仍有效。
+- 结论：这是进入异步/safepoint 原型前的结构化步骤，不主张已有吞吐收益。下一步才是最小 `ManagedThreadReceive` task 原型或先添加 checkpoint safepoint guard。
