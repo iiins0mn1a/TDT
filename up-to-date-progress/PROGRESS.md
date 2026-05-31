@@ -143,3 +143,41 @@ geth `v1.17.3` 已经从源码构建到 `deps/go-ethereum-v1.17.3/build/bin/geth
 配置含义：Prysm v7.1.4 release 明确包含 Gloas/Fulu 相关推进和性能修复；这解释了升级时必须显式声明后续 fork version/epoch，避免 testnet config 继承 mainnet 默认值造成 fork schedule 冲突。geth v1.17.3 对 Cancun/blobSchedule 的校验也要求 genesis JSON 明确包含 blobSchedule.cancun。
 
 下一步：开始审 Shadow upstream 最近改动，只考虑能改善 Go real-client 兼容性、确定性或性能，且能用 TDT smoke/cp-restore 证明不回退的小范围补丁。
+
+## 2026-06-01 Shadow upstream 候选筛选
+
+结论：本轮只准备吸收 resolver numeric address 兼容补丁，不直接合并 upstream/main，也暂不吸收 scheduler/PDEATHSIG 类补丁。
+
+原因：upstream/main 与当前 fork 的差异很大，直接 merge 会触碰 checkpoint/restore、run-control、TCP restore 等核心改动，风险不可接受。resolver 补丁只影响 shim getaddrinfo 的数字地址解析，属于无持久运行态的兼容性改动；对真实 Go 客户端和未来更多 client 有价值。
+
+暂缓项：scheduler syscall emulation 和 PR_SET_PDEATHSIG 都对更多真实程序有潜在价值，但它们会新增或依赖 thread/process 运行态。当前 fork 的 checkpoint/restore 要求所有恢复关键状态都显式进入 snapshot，所以这些补丁需要单独建模和测试，不能作为低风险顺手 merge。
+
+下一步：cherry-pick upstream PR #3742 的 resolver 补丁，构建 Shadow，并重跑 TDT smoke/cp-restore 守卫。
+
+## 2026-06-01 Shadow upstream 小补丁落地
+
+结论：Shadow up-to-date 分支现在吸收了两个低风险 upstream 补丁：resolver numeric IPv6/AI_V4MAPPED 兼容，以及 fcntl command enum logging。
+
+具体提交：62d5b9c04 对应 upstream PR #3742，改善 shim getaddrinfo 对 ::1、IPv6 literal 和 AI_V4MAPPED 的行为；66fcc1535 对应 upstream 的 fcntl enum logging，使 syscall 日志更容易读。
+
+风险控制：没有吸收 scheduler syscall emulation、PR_SET_PDEATHSIG、linux-api 7.0、Rust toolchain bump 等会引入 thread/process 状态或大面积 generated-code churn 的补丁。这样可以避免给 checkpoint/restore 增加未建模恢复态。
+
+验证进度：补丁后 Shadow 已重新构建成功。resolver-only 时已跑过一次 smoke/cp-restore；加入 fcntl logging 后还需要重新跑最终 TDT 守卫。
+
+## 2026-06-01 upstream 小补丁后的最终 smoke/cp-restore 守卫
+
+结论：加入 resolver 和 fcntl logging 两个 Shadow upstream 小补丁后，up-to-date 真实客户端 smoke 与 cp/restore 仍然通过。
+
+证据：最终 smoke 中 Shadow exit code 为 0，verify-smoke PASS；4 个 beacon 均完成 150 次 block sync/state transition，geth 链头更新 152 次，4 个 validator 均有 block 与 sync message。最终 cprestore 也 PASS，恢复后 beacon/geth/validator 日志仍持续推进。
+
+语义边界：这仍证明的是恢复后继续推进，不等价于 determinism oracle。Subagent B 的审计指出，up-to-date clients 的确定性 replay 和完整 suite/perf 还需要单独补测。
+
+下一步：先提交并推送 Shadow/TDT submodule 指针，保存当前可恢复状态；随后运行 up-to-date real-client determinism / suite / perf gate。
+
+## 2026-06-01 远程保存 Shadow upstream 小补丁
+
+结论：Shadow fork 的 up-to-date 分支已推送到远程，TDT 接下来会固定到这个新 Shadow gitlink。
+
+证据：deps/shadow 当前 HEAD 为 66fcc1535，包含 62d5b9c04 resolver 补丁和 66fcc1535 fcntl enum logging 补丁；git push origin up-to-date 已完成。
+
+下一步：在 TDT up-to-date 提交 deps/shadow gitlink 更新和本进度记录，然后开始 determinism/suite/perf 验证。
