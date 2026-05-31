@@ -354,6 +354,9 @@ def evaluate_real_client_result(case_result: dict[str, Any], result_path: Path |
     detail = {
         "result_path": str(result_path),
         "passed": data.get("passed"),
+        "strict_passed": data.get("strict_passed"),
+        "determinism_class": data.get("determinism_class"),
+        "allowed_order_only_mismatches": len(data.get("allowed_order_only_mismatches", [])),
         "comparisons": len(data.get("comparisons", [])),
         "mismatches": len(data.get("first_mismatches", [])),
         "checkpoint_elapsed_ms": data.get("checkpoint_elapsed_ms"),

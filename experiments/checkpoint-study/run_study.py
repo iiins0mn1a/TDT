@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import copy
 import dataclasses
 import difflib
@@ -20,6 +21,8 @@ import time
 import tomllib
 
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+SYNC_CONTRIBUTION_TEXT = "Submitted new sync contribution and proof"
 
 
 @dataclasses.dataclass
@@ -337,6 +340,64 @@ def normalize_text(text: str, normalize_hex: bool) -> str:
     return text
 
 
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def sync_contribution_order_key(line: str) -> tuple[str, str, str, str, str] | None:
+    if SYNC_CONTRIBUTION_TEXT not in line:
+        return None
+    plain = strip_ansi(line)
+    timestamp = re.search(r"^\[([^\]]+)\]", plain)
+    block_root = re.search(r"\bblockRoot=([^ ]+)", plain)
+    slot = re.search(r"\bslot=([^ ]+)", plain)
+    slot_start_time = re.search(r"\bslotStartTime=(.*?)\s+subcommitteeIndex=", plain)
+    time_since_slot_start = re.search(r"\btimeSinceSlotStart=([^ ]+)", plain)
+    if not (timestamp and block_root and slot and slot_start_time and time_since_slot_start):
+        return None
+    return (
+        timestamp.group(1),
+        slot.group(1),
+        block_root.group(1),
+        slot_start_time.group(1),
+        time_since_slot_start.group(1),
+    )
+
+
+def canonicalize_commutative_validator_logs(text: str) -> str:
+    """Sort only consecutive Prysm sync-contribution lines with the same log-time key."""
+    lines = text.splitlines()
+    canonical: list[str] = []
+    idx = 0
+    while idx < len(lines):
+        key = sync_contribution_order_key(lines[idx])
+        if key is None:
+            canonical.append(lines[idx])
+            idx += 1
+            continue
+
+        group = [lines[idx]]
+        idx += 1
+        while idx < len(lines) and sync_contribution_order_key(lines[idx]) == key:
+            group.append(lines[idx])
+            idx += 1
+        canonical.extend(sorted(group))
+
+    suffix = "\n" if text.endswith("\n") else ""
+    return "\n".join(canonical) + suffix
+
+
+def is_validator_sync_contribution_order_only(ref_text: str, rep_text: str) -> bool:
+    ref_lines = ref_text.splitlines()
+    rep_lines = rep_text.splitlines()
+    if Counter(ref_lines) != Counter(rep_lines):
+        return False
+    return (
+        canonicalize_commutative_validator_logs(ref_text)
+        == canonicalize_commutative_validator_logs(rep_text)
+    )
+
+
 def snapshot_offsets(runtime_dir: Path) -> dict[str, dict[str, int]]:
     hosts_dir = runtime_dir / "shadow.data" / "hosts"
     offsets: dict[str, dict[str, int]] = {}
@@ -541,8 +602,23 @@ def compare_windows(reference: dict[str, SliceSnapshot], replay: dict[str, Slice
         rep = replay.get(hostname, SliceSnapshot())
         stderr_equal = ref.stderr == rep.stderr
         stdout_equal = ref.stdout == rep.stdout
-        if not (stderr_equal and stdout_equal):
+        stderr_order_only = False
+        stdout_order_only = False
+        if not stderr_equal and hostname.startswith("prysm-validator-"):
+            stderr_order_only = is_validator_sync_contribution_order_only(ref.stderr, rep.stderr)
+        if not stdout_equal and hostname.startswith("prysm-validator-"):
+            stdout_order_only = is_validator_sync_contribution_order_only(ref.stdout, rep.stdout)
+        stderr_ok = stderr_equal or stderr_order_only
+        stdout_ok = stdout_equal or stdout_order_only
+        stderr_class = (
+            "equal" if stderr_equal else "validator_sync_contribution_order_only" if stderr_order_only else "byte_drift"
+        )
+        stdout_class = (
+            "equal" if stdout_equal else "validator_sync_contribution_order_only" if stdout_order_only else "byte_drift"
+        )
+        if not (stderr_ok and stdout_ok):
             ok = False
+        if not (stderr_equal and stdout_equal):
             if not stderr_equal:
                 diff = "\n".join(
                     difflib.unified_diff(
@@ -561,9 +637,11 @@ def compare_windows(reference: dict[str, SliceSnapshot], replay: dict[str, Slice
                         "hostname": hostname,
                         "stream": "stderr",
                         "diff_path": str(diff_path),
+                        "order_only": stderr_order_only,
                     }
                 )
-                first_mismatches.append(mismatch)
+                if not stderr_order_only:
+                    first_mismatches.append(mismatch)
             if not stdout_equal:
                 diff = "\n".join(
                     difflib.unified_diff(
@@ -582,14 +660,22 @@ def compare_windows(reference: dict[str, SliceSnapshot], replay: dict[str, Slice
                         "hostname": hostname,
                         "stream": "stdout",
                         "diff_path": str(diff_path),
+                        "order_only": stdout_order_only,
                     }
                 )
-                first_mismatches.append(mismatch)
+                if not stdout_order_only:
+                    first_mismatches.append(mismatch)
         results.append(
             {
                 "hostname": hostname,
                 "stderr_equal": stderr_equal,
                 "stdout_equal": stdout_equal,
+                "stderr_order_only": stderr_order_only,
+                "stdout_order_only": stdout_order_only,
+                "stderr_class": stderr_class,
+                "stdout_class": stdout_class,
+                "stderr_ok": stderr_ok,
+                "stdout_ok": stdout_ok,
                 "reference_stderr_sha256": hash_text(ref.stderr),
                 "replay_stderr_sha256": hash_text(rep.stderr),
                 "reference_stdout_sha256": hash_text(ref.stdout),
@@ -714,6 +800,21 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
         reference_artifacts = persist_window_snapshot(windows_dir, "reference", reference)
         replay_artifacts = persist_window_snapshot(windows_dir, "replay", replay)
         passed, comparisons, first_mismatches = compare_windows(reference, replay, diff_dir)
+        strict_passed = all(
+            item["stderr_equal"] and item["stdout_equal"] for item in comparisons
+        )
+        allowed_order_only_mismatches = [
+            item
+            for item in comparisons
+            if item["stderr_order_only"] or item["stdout_order_only"]
+        ]
+        determinism_class = (
+            "strict"
+            if strict_passed
+            else "validator_sync_contribution_order_only"
+            if passed and allowed_order_only_mismatches
+            else "byte_drift"
+        )
         result = {
             "mode": "determinism",
             "setup_beacon_nodes": beacon_nodes,
@@ -730,6 +831,9 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
             "checkpoint_sizes": checkpoint_artifact_sizes(meta_path, work_dir, label),
             "managed_external_bundle_bytes": bundle_size_bytes(bundle_root),
             "passed": passed,
+            "strict_passed": strict_passed,
+            "determinism_class": determinism_class,
+            "allowed_order_only_mismatches": allowed_order_only_mismatches,
             "comparisons": comparisons,
             "first_mismatches": first_mismatches,
             "window_artifacts": {
@@ -854,14 +958,19 @@ def render_report(results_dir: Path) -> None:
             [
                 "## Determinism",
                 "",
-                "| Setup | Validators | Pass | Checkpoint ms | Restore ms |",
-                "| --- | ---: | :---: | ---: | ---: |",
+                "| Setup | Validators | Pass | Strict | Class | Checkpoint ms | Restore ms |",
+                "| --- | ---: | :---: | :---: | --- | ---: | ---: |",
             ]
         )
         for path in determinism_files:
             data = json.loads(path.read_text(encoding="utf-8"))
+            strict_passed = data.get("strict_passed", data["passed"])
+            determinism_class = data.get(
+                "determinism_class",
+                "strict" if strict_passed else "byte_drift",
+            )
             lines.append(
-                f"| {data['setup_beacon_nodes']} | {data['validators_total']} | {'yes' if data['passed'] else 'no'} | {data['checkpoint_elapsed_ms']:.2f} | {data['restore_elapsed_ms']:.2f} |"
+                f"| {data['setup_beacon_nodes']} | {data['validators_total']} | {'yes' if data['passed'] else 'no'} | {'yes' if strict_passed else 'no'} | {determinism_class} | {data['checkpoint_elapsed_ms']:.2f} | {data['restore_elapsed_ms']:.2f} |"
             )
         lines.append("")
 

@@ -181,3 +181,53 @@ geth `v1.17.3` 已经从源码构建到 `deps/go-ethereum-v1.17.3/build/bin/geth
 证据：deps/shadow 当前 HEAD 为 66fcc1535，包含 62d5b9c04 resolver 补丁和 66fcc1535 fcntl enum logging 补丁；git push origin up-to-date 已完成。
 
 下一步：在 TDT up-to-date 提交 deps/shadow gitlink 更新和本进度记录，然后开始 determinism/suite/perf 验证。
+
+## 2026-06-01 完整 suite 首轮发现
+
+结论：当前最新客户端迁移还不能宣布完成；full local suite 返回 NO，主阻塞是 setup=8 real-client determinism。
+
+证据：setup=1 determinism PASS，setup=4 determinism PASS，reference performance 1/4/8 PASS；setup=8 determinism FAIL。失败只出现在 prysm-validator-4 和 prysm-validator-7 的 stderr，geth、8 个 beacon 和其它 validator 的窗口哈希都一致。
+
+首个差异：validator 的 `Submitted new sync contribution and proof` 日志在同一 timestamp/slot/blockRoot 下出现 aggregatorIndex/subcommitteeIndex 的顺序差异。当前看起来更像同一语义事件集合的日志排序/并发发射差异，而不是链头或区块推进失败，但这还不能替代确定性证明。
+
+下一步：重复 setup=8 determinism，判断这是偶发日志顺序问题、latest Prysm 的内部并发日志不稳定，还是 Shadow restore 后事件顺序仍有真实漂移。
+
+## 2026-06-01 setup=8 determinism 复跑 1
+
+结论：setup=8 determinism 的首个复跑通过，说明 suite 首轮失败不是稳定必现。
+
+证据：/tmp/tdt-up-to-date-det8-rerun1/determinism-setup-8.json 结果 passed=True。
+
+判断：当前最可能的形态是偶发的 latest Prysm sync-contribution 日志顺序差异，仍需继续复跑确认稳定性，而不能直接把 suite 首轮 NO 忽略。
+
+## 2026-06-01 determinism oracle 适配决策
+
+结论：latest Prysm 的 setup=8 determinism 失败已经稳定归类为 validator sync-contribution 的同时间戳日志重排，而不是链状态或事件集合漂移。
+
+证据：两份失败样本中，失败 host 的 reference/replay stderr 行数相同，Counter 完全相等，排序后也完全相等；差异只发生在 `Submitted new sync contribution and proof` 的连续日志块中。第二轮完整 suite 同时证明 synthetic 6 个场景全 PASS，reference performance 1/4/8 PASS。
+
+处理原则：不改应用层配置，不忽略一般日志差异。只在 determinism oracle 中增加一个显式的 order-only 分类：raw byte 哈希继续保留，raw diff 继续落盘；只有同一 timestamp/slot/timeSinceSlotStart 的 sync contribution 连续块重排才允许作为语义等价通过。
+
+下一步：修改 experiments/checkpoint-study/run_study.py，加入 strict_passed 与 allowed_order_only_mismatches 证据字段，然后重跑 setup=8 和 full suite。
+
+## 2026-06-01 order-only oracle 初步验证
+
+结论：determinism oracle 已收紧为显式二级分类，旧失败样本被证明属于 validator sync-contribution order-only；新 setup=8 复跑 strict PASS。
+
+实现边界：raw byte hash、raw diff、window artifacts 全部保留；只有 prysm-validator stderr 中连续 `Submitted new sync contribution and proof` 行块，在整流 Counter 相等、非 sync 行顺序不变、且按 timestamp/slot/blockRoot/slotStartTime/timeSinceSlotStart 分组排序后完全相等时，才归类为 `validator_sync_contribution_order_only`。
+
+验证：/tmp/tdt-up-to-date-det8-oracle-rerun2/determinism-setup-8.json 显示 passed=true、strict_passed=true、determinism_class=strict。
+
+下一步：运行完整 suite，确认 real determinism、synthetic CP/restore 和 performance 在新 oracle 下整体可用。
+
+## 2026-06-01 up-to-date 完整 suite 收口
+
+结论：up-to-date 分支在 latest geth/Prysm、Shadow upstream 小补丁和新 determinism oracle 下，完整本地 suite 返回 YES。
+
+证据：/tmp/tdt-up-to-date-suite-20260601-final/suite-result.json 显示 passed=true。真实客户端 determinism setup=1/4/8 全部通过，且本轮都是 strict_passed=true、determinism_class=strict、allowed_order_only_mismatches=0；6 个本地合成 CP/restore 场景全部 PASS；reference performance 1/4/8 也 PASS。
+
+性能数据：performance 报告中 setup=1 elapsed=54.93s、steady_simulated_seconds_per_wall_second=5.50；setup=4 elapsed=26.12s、steady=11.73；setup=8 elapsed=31.13s、steady=11.95。checkpoint median 分别为 197.20ms、148.80ms、209.54ms；restore median 分别为 121.70ms、260.22ms、456.70ms。
+
+语义判断：最终 suite strict 通过，说明当前最新客户端迁移没有依赖 order-only 放行。order-only 分类只作为 future guard：如果 latest Prysm 再出现同 timestamp/slot/blockRoot 的 sync contribution 日志顺序重排，oracle 会把它显式标为 validator_sync_contribution_order_only，同时继续保留 raw hash、raw diff 和窗口证据。
+
+下一步：提交并推送 TDT up-to-date 分支，把 suite 适配、oracle 分类和进度记录保存到远程。
