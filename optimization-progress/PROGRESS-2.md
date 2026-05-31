@@ -321,3 +321,11 @@
 - `runtime_snapshot` 和 `current_event_bytes` 现在会 assert 当前 thread 处于 Shadow-owned `Parked` safepoint；如果未来异步原型在 token 半状态下触发 checkpoint，会立刻暴露，而不是默默序列化错误状态。
 - 这仍不是性能优化本身，而是为了后续 `ManagedThreadReceive` task 原型保护 cp/restore 语义。
 - 验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过；包含 checkpoint/restore 的真实客户端 setup8 counters-off `/tmp/tdt-phaseguard-off-setup8-t1-20260531` 通过，steady=31.95x。
+
+## 2026-05-31 13:52 - phase2 token/guard 完整 suite 验证
+
+- 在 shadow `f912a8a58`、TDT `c8a8c1c` 后运行完整 local suite：`/tmp/tdt-suite-phase2-token-guard-20260531`，输出 YES。
+- 真实客户端 determinism：setup1/setup4/setup8 全 PASS。
+- 合成 CP/restore verifier：6 个 synthetic 场景全 PASS。
+- reference performance 使用默认 counters-off：setup1 steady=44.90x，setup4 steady=40.35x，setup8 steady=32.66x；checkpoint/restore median 分别为 setup1 150.20/89.17ms，setup4 117.05/210.35ms，setup8 148.66/364.90ms。
+- 结论：当前 NativeRunToken 等价重构与 phase guard 没有破坏既有功能和确定性；可以继续推进 `ManagedThreadReceive` / safepoint 原型，但不能跳过稳定顺序和 checkpoint guard。
