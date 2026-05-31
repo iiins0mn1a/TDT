@@ -284,3 +284,13 @@
 - 收尾：Shadow 源码保持无实验 diff，仅重新 `./setup build` 回到当前 baseline binary；未跟踪残留仍是 `src/test/signal/shadow.data/`。
 - 结论：低层 channel 原子/布局/spin 这三条低风险 IPC 微优化没有可采纳收益。下一步不能继续微调 channel 参数，应回到更高层的 managed-thread continue 语义压缩或 safepoint 模型。
 - Avicenna 只读报告补充：perf report 还应显式标注 counters on/off、隐藏 counters-off 空诊断表、区分 correctness verdict 与 performance-only verdict；这是报告层清理，不是实际加速候选。
+
+## 2026-05-31 13:27 - phase2 分支与 affinity 快路径否定结果
+
+- 从 TDT 和 shadow 当前分支 `explore/main-perf-20260531` 新建分支 `explore/main-perf-phase2-20260531`。原分支保持为已验证基线。
+- 主矛盾保持不变：setup8 吞吐下降仍然指向 managed-thread 同步 continue/receive 交换，而不是事件队列或应用层配置。
+- 本轮窄候选：`ManagedThread::sync_affinity_with_worker` 每次 resume 都进入 C 层；C 层已有 `new_cpu_num == old_cpu_num` no-op，但 Rust 侧仍有 FFI 调用。
+- 实验补丁：在 Rust 侧检测 `current_affinity == previous_affinity` 时直接返回，只减少 no-op FFI，不改变模拟语义、应用层配置或 cp/restore 状态。
+- 验证：shadow release build 通过；setup8 三轮 counters-off 性能探针 `/tmp/tdt-affinity-fastpath-setup8-t3-20260531` 通过。
+- 结果：实验 steady=31.02x；同日 baseline `/tmp/tdt-main-perf-off-setup8-t3-20260531` steady=31.13x。变化为负且在噪声范围内。
+- 决策：撤销该 shadow 补丁，不进入实现候选。该点说明 resume 外围小开销不是当前可见主瓶颈，继续回到更大的同步 IPC/managed-thread 服务模型假设。撤销后已重新 build，当前 shadow 源码回到无 diff 状态，仅保留未跟踪运行残留 `src/test/signal/shadow.data/`。
