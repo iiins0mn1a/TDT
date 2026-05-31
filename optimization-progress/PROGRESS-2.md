@@ -248,3 +248,18 @@
 - 与最早报告数字对比：setup1 checkpoint 332.14ms -> 148.86ms，restore 170.44ms -> 88.42ms；setup4 checkpoint 3489.38ms -> 126.17ms，restore 403.19ms -> 189.37ms；setup8 checkpoint 7799.97ms -> 185.26ms，restore 551.80ms -> 346.23ms。
 - 当前性能主矛盾仍未变：setup8 managed continue receive=13006.41ms，占 worker body wall 60.5%；Managed Continue Exchanges 中 SyscallComplete->Syscall 551329 次、receive=12741.62ms，是主导项。packet/event queue 不是主瓶颈。
 - 收尾状态：默认路径 suite 通过、共识语义正常、失败异步原型已移除。下一次 resume 应优先完善窗口边界诊断和继续研究能保持同步 resume 语义的 managed-thread continue 压缩方案。
+
+## 2026-05-31 main-based performance exploration restart
+
+- 分支：TDT 与 shadow 均从当前 main 基线新建 `explore/main-perf-20260531`，并已推送到远程。
+- 基线：TDT `bd00382`，shadow submodule `33237a152`；当前只有既有未跟踪残留 `deps/shadow/src/test/signal/shadow.data/`，未清理。
+- 触发原因：上一条 `explore/async-continue-safepoint` 在同一 suite 单次对比下没有性能收益，main steady throughput 反而略高：setup1 +6.79%，setup4 +2.80%，setup8 +2.29%。
+- 当前策略：不从旧分支直接 cherry-pick 行为改动；先审计旧分支相对 main 的差异，把观测型改动、行为型改动和文档型改动分开，再选择下一条只改模拟层且不破坏 determinism 的探索线。
+
+## 2026-05-31 setup8 perf-counter overhead check
+
+- 实验：当前 `explore/main-perf-20260531` 基于 main 的 shadow `33237a152`，只跑 setup8 三轮 performance，不改应用层配置。
+- perf-counters on：`/tmp/tdt-main-perf-on-setup8-t3-20260531`，passed=true，steady=28.52x，elapsed=38.81s，checkpoint median=187.22ms，restore median=341.38ms；其中 trial1 restore=1982.93ms，是明显长尾。
+- perf-counters off：`/tmp/tdt-main-perf-off-setup8-t3-20260531`，passed=true，steady=31.13x，elapsed=35.61s，checkpoint median=197.08ms，restore median=329.99ms。
+- 判断：细粒度 counters 对 throughput 判断有明显扰动；后续“是否加速”的主指标应使用 counters off，多轮重复；counters on 只用于定位瓶颈，不用于判断最终吞吐收益。
+- 对旧 async 分支的解释：旧分支包含更多 managed-thread/syscall-condition 热路径计时和 async 分支判断，单次 suite 下慢于 main 不足以证明应用语义变差，但足以说明不能把观测型补丁当性能优化保留。
