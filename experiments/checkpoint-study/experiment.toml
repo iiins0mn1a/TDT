@@ -1,5 +1,5 @@
 [base]
-tdt_config = "../../tdt_config.toml"
+tdt_config = "../../tdt_config.up_to_date.toml"
 results_dir = "results"
 work_root = "/tmp/tdt-checkpoint-study"
 
@@ -10,6 +10,7 @@ warmup_step_seconds = 60
 max_warmup_seconds = 1200
 settle_seconds = 60
 comparison_window_seconds = 120
+comparison_boundary_guard_seconds = 3
 performance_trials = 3
 managed_external_paths = ["network", "beacon_peers.txt"]
 checkpoint_label_prefix = "checkpoint_study"

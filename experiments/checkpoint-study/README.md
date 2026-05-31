@@ -24,6 +24,10 @@ For each setup (`1`, `4`, `8` beacon nodes), the runner:
 9. runs for the same comparison window and stores the replay log slice
 10. compares the two log windows
 
+The default run adds a 3 second boundary guard after the nominal comparison
+window. This is long enough to move past pause-boundary log delivery, while
+staying well below one 12 second Ethereum slot.
+
 The determinism oracle is application logs only:
 
 - `geth`
@@ -43,6 +47,10 @@ Managed external-state rollback is still performed to make restore valid, but it
 is not included in the primary latency metric.
 
 ## Usage
+
+This branch's default experiment config uses `../../tdt_config.up_to_date.toml`,
+so the commands below run the latest-client setup unless you pass a different
+experiment TOML with `--config`.
 
 Run all experiments:
 

@@ -231,3 +231,57 @@ geth `v1.17.3` 已经从源码构建到 `deps/go-ethereum-v1.17.3/build/bin/geth
 语义判断：最终 suite strict 通过，说明当前最新客户端迁移没有依赖 order-only 放行。order-only 分类只作为 future guard：如果 latest Prysm 再出现同 timestamp/slot/blockRoot 的 sync contribution 日志顺序重排，oracle 会把它显式标为 validator_sync_contribution_order_only，同时继续保留 raw hash、raw diff 和窗口证据。
 
 下一步：提交并推送 TDT up-to-date 分支，把 suite 适配、oracle 分类和进度记录保存到远程。
+
+## 2026-06-01 completion audit 发现的复现缺口
+
+结论：功能测试已经通过，但 geth 二进制的构建元数据需要补强，否则“latest geth”这件事的审计证据不够干净。
+
+证据：`deps/go-ethereum-v1.17.3` submodule 自身指向 `117e067f0f0bae1a17082321f224dedb6765b10f`，也正好是官方 `v1.17.3` tag；但当前 `build/bin/geth version` 的 Git Commit 字段显示成了 TDT superproject 的 `bd00382f...`。这说明源码版本没错，但 Go VCS stamping 在 submodule 构建场景下读到了上层仓库元数据。
+
+处理：新增 `scripts/build_up_to_date_clients.sh`，用临时本地 clone 构建 geth，再复制回 `deps/go-ethereum-v1.17.3/build/bin/geth`。这样二进制的版本元数据会来自 geth 仓库本身，而不是 TDT superproject。
+
+下一步：执行新脚本重建 geth，确认 `geth version` 显示 `1.17.3-stable / 117e067...`，然后重跑 up-to-date full suite，保证最终证据覆盖当前实际二进制。
+
+## 2026-06-01 up-to-date 默认入口修正
+
+结论：`up-to-date` 分支现在默认进入 latest-client 配置，避免用户无意中跑回旧 baseline。
+
+原因：只读审计指出 README、`run_tdt.sh`、`tdt_orchestrator.py`、local suite 和 checkpoint study 默认路径仍偏向 `tdt_config.toml`，这会削弱“当前 TDT 实验对象已经换成 latest geth/Prysm”的可复现性。
+
+处理：默认配置优先级调整为显式 `TDT_CONFIG`、`tdt_config.up_to_date.toml`、`tdt_config.local.toml`、`tdt_config.toml`。README 也明确区分 latest-client 默认入口和 baseline 对比入口；旧 baseline 仍可通过显式 `--config tdt_config.toml` 或 `TDT_CONFIG=tdt_config.local.toml` 使用。
+
+下一步：等待重建 geth 后的完整 suite 结束，用当前默认入口和当前实际二进制补齐最终 completion audit。
+
+## 2026-06-01 determinism 边界窗口修正
+
+结论：重建 geth 后的短路径 suite 中，setup=4 出现一次单点 determinism FAIL，但首因是窗口结束边界的一条 Prysm beacon pubsub unsubscribe 日志，不是共识语义漂移。
+
+证据：setup=1 和 setup=8 strict PASS，synthetic 6/6 PASS，performance PASS。setup=4 唯一差异是 `prysm-beacon-3` 在 reference 窗口末尾多出 `Unsubscribed from /beacon_attestation_19`，时间戳正好落在 nominal 120s 比较窗口终点；区块同步、state transition、validator 日志和其它节点窗口一致。
+
+处理：determinism runner 增加默认 1 秒 `comparison_boundary_guard_seconds`，实际运行比较窗口为 `comparison_window_seconds + guard`。这不是过滤日志，也不是修改应用层配置，而是让刚好排在 pause boundary 的日志事件在 reference 和 replay 两边都能落盘，降低 oracle 边界采样歧义。
+
+下一步：重跑 setup=4，再跑完整 suite；只有 latest-client determinism、synthetic 和 performance 全部重新通过后，才进入最终提交。
+
+## 2026-06-01 boundary guard 调整
+
+结论：1 秒 boundary guard 仍不足以覆盖 setup=4 的窗口尾部，guard 需要按 slot 语义设为 3 秒。
+
+证据：单跑 setup=4 时，Prysm unsubscribe 差异消失，但 geth 在窗口尾部缺少 block 19 的 `Imported new potential chain segment`。该行同样落在比较窗口末端附近；其它 geth payload 更新、beacon block transition、validator 日志都一致。
+
+处理：将 `comparison_boundary_guard_seconds` 调整为 3 秒。这个值超过当前观察到的窗口尾部投递/import/logging 抖动，同时小于一个 12 秒 Ethereum slot，不会把下一 slot 的主流程引入比较窗口。
+
+下一步：重新运行 setup=4 和 full suite，确认这不是掩盖真实语义漂移，而是消除 pause-boundary 采样歧义。
+
+## 2026-06-01 up-to-date completion audit 收口
+
+结论：当前 `up-to-date` 分支的 latest-client TDT 方案已经重新跑通完整 suite，且功能证据覆盖当前实际二进制和默认入口。
+
+版本证据：`geth version` 现在显示 `1.17.3-stable / 117e067f0f0bae1a17082321f224dedb6765b10f / 20260511`，Prysm beacon 与 validator 显示 `v7.1.4 / 1756380c2e84e90004df0a6268f8c28d832f5ab6`。`./run_tdt.sh --show-config` 与 `python3 scripts/tdt_orchestrator.py --show-config` 都默认指向 `tdt_config.up_to_date.toml`，并解析到 `deps/go-ethereum-v1.17.3` 与 `deps/prysm-v7.1.4`。
+
+功能证据：/tmp/tdt-u2-final-r/suite-result.json 显示 answer=YES、passed=true、tdt_config=/home/ins0/Repos/TDT/tdt_config.up_to_date.toml。真实客户端 determinism setup=1/4/8 全部 PASS，且 strict_passed=true、determinism_class=strict、allowed_order_only_mismatches=0。6 个 synthetic CP/restore 场景全部 PASS。
+
+性能证据：/tmp/tdt-u2-final-r/performance/REPORT.md 显示 reference-performance-1-4-8 PASS。steady simulated seconds per wall second 分别为 setup=1: 5.52、setup=4: 11.74、setup=8: 11.56；checkpoint median 分别为 195.89ms、199.48ms、301.93ms；restore median 分别为 100.48ms、277.24ms、770.57ms。
+
+试错记录：一次 full suite 使用过长 work-root 触发 Shadow control socket `SUN_LEN` 限制，已在 determinism runner 中加入路径长度前置检查。一次 setup=4 单点失败定位为 pause-boundary 采样歧义，已用 3 秒 boundary guard 修正；最终 full suite 在 guard=3、comparison_run_seconds=123 下 strict 通过。
+
+下一步：提交并推送 TDT `up-to-date`；若 completion audit 没有新缺口，则可以关闭当前 goal。

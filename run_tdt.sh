@@ -11,6 +11,14 @@ for arg in "$@"; do
   fi
 done
 
+if [[ "$has_config_arg" == false && -n "${TDT_CONFIG:-}" ]]; then
+  exec python3 "$SCRIPT_DIR/scripts/tdt_orchestrator.py" --config "$TDT_CONFIG" "$@"
+fi
+
+if [[ "$has_config_arg" == false && -f "$SCRIPT_DIR/tdt_config.up_to_date.toml" ]]; then
+  exec python3 "$SCRIPT_DIR/scripts/tdt_orchestrator.py" --config "$SCRIPT_DIR/tdt_config.up_to_date.toml" "$@"
+fi
+
 if [[ "$has_config_arg" == false && -f "$SCRIPT_DIR/tdt_config.local.toml" ]]; then
   exec python3 "$SCRIPT_DIR/scripts/tdt_orchestrator.py" --config "$SCRIPT_DIR/tdt_config.local.toml" "$@"
 fi

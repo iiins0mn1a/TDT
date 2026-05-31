@@ -65,6 +65,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_config_path() -> Path:
+    env_config = os.environ.get("TDT_CONFIG")
+    if env_config:
+        return Path(env_config).resolve()
+    up_to_date = TDT_ROOT / "tdt_config.up_to_date.toml"
+    if up_to_date.exists():
+        return up_to_date
     local = TDT_ROOT / "tdt_config.local.toml"
     if local.exists():
         return local

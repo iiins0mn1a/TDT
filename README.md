@@ -9,11 +9,13 @@ The repository is intentionally organized as an orchestration layer. Shadow, Pry
 - `assets/`: seed genesis and chain configuration inputs copied into each runtime.
 - `scripts/`: orchestration, config loading, network database creation, log checks, and checkpoint/restore control helpers.
 - `experiments/checkpoint-study/`: repeatable determinism and latency runner for setup sizes 1, 4, and 8.
-- `tdt_config.toml`: default human-edited run configuration.
+- `tdt_config.up_to_date.toml`: default latest-client run configuration on this branch.
+- `tdt_config.toml`: baseline run configuration kept for comparison.
 - `run_tdt.sh`: compatibility entrypoint for interactive and one-shot runs.
 - `deps/shadow`: Shadow fork with deterministic checkpoint/restore work.
-- `deps/prysm`: Prysm fork used by the real-client nodes.
-- `deps/go-ethereum`: geth source used for the execution client.
+- `deps/prysm-v7.1.4`: latest Prysm release used by the up-to-date real-client nodes.
+- `deps/go-ethereum-v1.17.3`: latest geth release used by the up-to-date execution client.
+- `deps/prysm` and `deps/go-ethereum`: baseline clients kept for comparison.
 - `runtime/`: generated working directory; ignored by Git.
 
 ## Checkout
@@ -31,7 +33,8 @@ For an existing clone:
 git submodule update --init --recursive
 ```
 
-The pinned Shadow submodule currently points at `iiins0mn1a/shadow-gen` branch `spike-network-restore-protocol-rewrite`, commit `265cac9ad7967a717e4322443dfec8ea32a34f21`.
+The pinned Shadow submodule currently points at `iiins0mn1a/shadow-gen`
+branch `up-to-date`, commit `66fcc1535266cfd33bebdf7fe1498d446a889c84`.
 
 ## Build Prerequisites
 
@@ -43,11 +46,42 @@ cmake --build deps/shadow/build -j4 --target shadow
 # Build geth so deps/go-ethereum/build/bin/geth exists.
 ```
 
-TDT also needs a CRIU binary that works with the modified Shadow checkpoint/restore path. Set it through `CRIU_BIN` or `tdt_config.toml`.
+On the `up-to-date` branch, the latest-client experiment is pinned separately
+from the baseline clients:
+
+- `deps/go-ethereum-v1.17.3`
+- `deps/prysm-v7.1.4`
+
+Build the up-to-date geth binary with:
+
+```bash
+./scripts/build_up_to_date_clients.sh
+```
+
+The script builds from a temporary local clone before copying the binary back to
+`deps/go-ethereum-v1.17.3/build/bin/geth`. This keeps geth's embedded VCS
+metadata tied to the geth submodule commit rather than the TDT superproject.
+
+TDT also needs a CRIU binary that works with the modified Shadow checkpoint/restore path. Set it through `CRIU_BIN` or the active TDT config.
 
 ## Configuration
 
-Edit `tdt_config.toml` to control cluster size, runtime duration, checkpoint/restore windows, and binary overrides. By default, TDT resolves binaries from the submodules:
+Edit `tdt_config.up_to_date.toml` to control cluster size, runtime duration,
+checkpoint/restore windows, and binary overrides for the latest-client setup.
+This branch uses it by default from `run_tdt.sh`, `tdt_orchestrator.py`, and the
+local suite unless `TDT_CONFIG` or an explicit `--config` is supplied.
+
+The latest-client config resolves binaries from:
+
+- `deps/shadow/build/src/main/shadow`
+- `deps/prysm-v7.1.4/dist/prysmctl-v7.1.4-linux-amd64`
+- `deps/prysm-v7.1.4/dist/beacon-chain-v7.1.4-linux-amd64`
+- `deps/prysm-v7.1.4/dist/validator-v7.1.4-linux-amd64`
+- `deps/go-ethereum-v1.17.3/build/bin/geth`
+
+For the baseline clients, pass `--config tdt_config.toml` or set
+`TDT_CONFIG=tdt_config.local.toml` if you maintain a local override. The
+baseline config resolves binaries from:
 
 - `deps/shadow/build/src/main/shadow`
 - `deps/prysm/bazel-bin/cmd/prysmctl/prysmctl_/prysmctl`
@@ -83,6 +117,15 @@ One-shot checkpoint/restore run:
 CRIU_BIN=/path/to/criu ./run_tdt.sh --mode cprestore --non-interactive
 ```
 
+Latest-client up-to-date suite:
+
+```bash
+python3 experiments/run_local_suite.py \
+  --results-dir /tmp/tdt-up-to-date-suite \
+  --work-root /tmp/tdt-up-to-date-suite-work \
+  --checkpoint-criu-jobs 32
+```
+
 Determinism guard for the real-client checkpoint study:
 
 ```bash
@@ -90,6 +133,10 @@ python3 experiments/checkpoint-study/run_study.py --mode determinism --setup 4 -
 ```
 
 A passing determinism run means the post-checkpoint application-log window exactly matches the post-restore replay window for geth, beacon, and validator logs.
+
+The checkpoint study defaults to `../../tdt_config.up_to_date.toml` on this
+branch. Pass `--config` with another experiment TOML if you need to compare
+against the baseline config.
 
 ## Current Limitation
 

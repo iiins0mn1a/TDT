@@ -690,7 +690,14 @@ def command_shell(config: TdtConfig) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TDT config-driven Shadow orchestrator")
-    parser.add_argument("--config", default=str((Path(__file__).resolve().parent.parent / "tdt_config.toml")))
+    root_dir = Path(__file__).resolve().parent.parent
+    env_config = os.environ.get("TDT_CONFIG")
+    default_config = Path(env_config).resolve() if env_config else root_dir / "tdt_config.up_to_date.toml"
+    if not default_config.exists():
+        default_config = root_dir / "tdt_config.local.toml"
+    if not default_config.exists():
+        default_config = root_dir / "tdt_config.toml"
+    parser.add_argument("--config", default=str(default_config))
     parser.add_argument("--mode", choices=("smoke", "cprestore"))
     parser.add_argument("--interactive", dest="interactive", action="store_true")
     parser.add_argument("--non-interactive", dest="interactive", action="store_false")

@@ -23,6 +23,7 @@ import tomllib
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 SYNC_CONTRIBUTION_TEXT = "Submitted new sync contribution and proof"
+MAX_UNIX_SOCKET_PATH = 107
 
 
 @dataclasses.dataclass
@@ -40,6 +41,7 @@ class ExperimentConfig:
     max_warmup_seconds: int
     settle_seconds: int
     comparison_window_seconds: int
+    comparison_boundary_guard_seconds: int
     performance_trials: int
     managed_external_paths: list[str]
     checkpoint_label_prefix: str
@@ -102,6 +104,7 @@ def load_study_config(path: str | Path) -> StudyConfig:
         max_warmup_seconds=int(exp_raw.get("max_warmup_seconds", 1200)),
         settle_seconds=int(exp_raw.get("settle_seconds", 60)),
         comparison_window_seconds=int(exp_raw.get("comparison_window_seconds", 120)),
+        comparison_boundary_guard_seconds=int(exp_raw.get("comparison_boundary_guard_seconds", 3)),
         performance_trials=int(exp_raw.get("performance_trials", 3)),
         managed_external_paths=list(exp_raw.get("managed_external_paths", ["network", "beacon_peers.txt"])),
         checkpoint_label_prefix=str(exp_raw.get("checkpoint_label_prefix", "checkpoint_study")),
@@ -152,6 +155,11 @@ def build_tdt_config(study: StudyConfig, modules: dict[str, object], beacon_node
 
 def launch_shadow(config, log_path: Path, restore_protocol_mode: str) -> ShadowSession:
     socket_path = config.work_dir / "control.sock"
+    if len(str(socket_path)) > MAX_UNIX_SOCKET_PATH:
+        raise ValueError(
+            f"control socket path is too long for Unix sockets: {socket_path} "
+            f"({len(str(socket_path))} > {MAX_UNIX_SOCKET_PATH}); use a shorter work_root"
+        )
     if socket_path.exists():
         socket_path.unlink()
     env = os.environ.copy()
@@ -775,7 +783,11 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
         wait_for_log_quiescence(work_dir)
         pre_offsets = snapshot_offsets(work_dir)
         checkpoint_prefixes = snapshot_prefixes(work_dir, pre_offsets)
-        continue_for(session, study.experiment.comparison_window_seconds)
+        comparison_run_seconds = (
+            study.experiment.comparison_window_seconds
+            + study.experiment.comparison_boundary_guard_seconds
+        )
+        continue_for(session, comparison_run_seconds)
         wait_until_paused(session, timeout_sec=120.0)
         wait_for_log_quiescence(work_dir)
         reference = capture_window(work_dir, pre_offsets, study.experiment.hex_normalization)
@@ -787,7 +799,7 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
         restore_elapsed_ms = issue_restore(session, label)
         wait_for_log_quiescence(work_dir)
         post_offsets = snapshot_offsets(work_dir)
-        continue_for(session, study.experiment.comparison_window_seconds)
+        continue_for(session, comparison_run_seconds)
         wait_until_paused(session, timeout_sec=120.0)
         wait_for_log_quiescence(work_dir)
         replay = capture_window(
@@ -823,6 +835,8 @@ def run_determinism(study: StudyConfig, modules: dict[str, object], beacon_nodes
             "ready_elapsed_seconds": ready_elapsed,
             "settle_seconds": study.experiment.settle_seconds,
             "comparison_window_seconds": study.experiment.comparison_window_seconds,
+            "comparison_boundary_guard_seconds": study.experiment.comparison_boundary_guard_seconds,
+            "comparison_run_seconds": comparison_run_seconds,
             "checkpoint_elapsed_ms": checkpoint_elapsed_ms,
             "restore_elapsed_ms": restore_elapsed_ms,
             "managed_external_backup_ms": bundle_backup_ms,
