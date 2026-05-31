@@ -53,6 +53,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-only", action="store_true")
     parser.add_argument("--case-timeout", type=int, default=1800)
     parser.add_argument("--performance-timeout", type=int, default=2400)
+    parser.add_argument(
+        "--performance-perf-counters",
+        choices=("on", "off"),
+        default="off",
+        help=(
+            "Pass through to experiments/perf_model/run_perf_model.py. "
+            "Defaults to off so suite throughput is not distorted by detailed counters."
+        ),
+    )
     parser.add_argument("--shadow-test-timeout", type=int, default=900)
     parser.add_argument("--shadow-test-jobs", type=int, default=os.cpu_count() or 4)
     parser.add_argument(
@@ -304,6 +313,7 @@ def build_performance_case(
     work_root: Path,
     timeout: int,
     checkpoint_criu_jobs: int,
+    perf_counters: str,
 ) -> SuiteCase:
     performance_work_root = work_root / "performance"
     longest_socket_path = (
@@ -331,6 +341,8 @@ def build_performance_case(
         str(performance_work_root),
         "--timeout",
         str(timeout),
+        "--perf-counters",
+        perf_counters,
     ]
     if checkpoint_criu_jobs > 0:
         command.extend(["--checkpoint-criu-jobs", str(checkpoint_criu_jobs)])
@@ -437,6 +449,7 @@ def main() -> int:
             work_root,
             args.performance_timeout,
             args.checkpoint_criu_jobs,
+            args.performance_perf_counters,
         )
         raw = run_command(perf_case, env)
         detail: dict[str, Any] = {}
@@ -445,6 +458,7 @@ def main() -> int:
             detail = {
                 "result_path": str(perf_case.result_path),
                 "report_path": str(results_dir / "performance/REPORT.md"),
+                "perf_counters": args.performance_perf_counters,
                 "summary": perf_data.get("summary", []),
             }
         performance_result = {

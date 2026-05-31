@@ -91,6 +91,18 @@ python3 experiments/checkpoint-study/run_study.py --mode determinism --setup 4 -
 
 A passing determinism run means the post-checkpoint application-log window exactly matches the post-restore replay window for geth, beacon, and validator logs.
 
+Local correctness suite:
+
+```bash
+python3 experiments/run_local_suite.py
+```
+
+The suite runs real-client determinism, synthetic checkpoint/restore checks, and
+a reference performance probe. The performance probe defaults to
+`--performance-perf-counters off` so the throughput number is not slowed by
+detailed instrumentation; use `--performance-perf-counters on` when diagnosing
+hot paths.
+
 ## Current Limitation
 
 Managed external rollback currently covers only the paths listed in `checkpoint_restore.managed_external_paths`, which default to:

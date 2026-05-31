@@ -263,3 +263,14 @@
 - perf-counters off：`/tmp/tdt-main-perf-off-setup8-t3-20260531`，passed=true，steady=31.13x，elapsed=35.61s，checkpoint median=197.08ms，restore median=329.99ms。
 - 判断：细粒度 counters 对 throughput 判断有明显扰动；后续“是否加速”的主指标应使用 counters off，多轮重复；counters on 只用于定位瓶颈，不用于判断最终吞吐收益。
 - 对旧 async 分支的解释：旧分支包含更多 managed-thread/syscall-condition 热路径计时和 async 分支判断，单次 suite 下慢于 main 不足以证明应用语义变差，但足以说明不能把观测型补丁当性能优化保留。
+
+## 2026-05-31 suite performance baseline口径修正
+
+- 决策：`experiments/run_local_suite.py` 的 performance 阶段默认传 `--perf-counters off`，新增 `--performance-perf-counters on|off` 供热路径定位时手动打开。
+- 原因：setup8 三轮基线显示 counters on steady=28.52x，counters off steady=31.13x；详细 counters 会明显扰动吞吐判断。suite 作为默认健康检查时应该报告干净吞吐。
+- 文档：更新 `README.md` 和 `experiments/perf_model/README.md`，明确 counters off 用于吞吐比较，counters on 用于定位。
+- 验证1：`python3 -m py_compile experiments/run_local_suite.py experiments/perf_model/run_perf_model.py` 通过；`run_local_suite.py --help` 显示 `--performance-perf-counters {on,off}`。
+- 验证2：performance-only 检查 `/tmp/tdt-suite-perf-default-off-check-20260531` 的 command 包含 `--perf-counters off`，setup8 steady=32.02x；该 run 因跳过 required cases 最终输出 NO 是预期。
+- 验证3：完整 suite 第一轮 `/tmp/tdt-suite-default-off-full-20260531` 出现 setup1 determinism 和 synthetic-eth-multiproc 偶发失败；两个失败单独重跑均通过：`/tmp/tdt-rerun-setup1-det-suitecfg-20260531` passed=true，`/tmp/tdt-rerun-eth-multiproc-20260531` PASS。
+- 验证4：完整 suite 第二轮 `/tmp/tdt-suite-default-off-full-r2-20260531` 输出 YES；真实客户端 setup1/4/8 determinism 全 PASS，6 个 synthetic verifier 全 PASS，performance PASS 且 counters=off。性能：setup1 steady=44.85x，setup4 steady=40.31x，setup8 steady=34.34x。
+- 结论：这是测量口径修正，不是 Shadow 内部加速；它让后续 suite 性能数字更接近真实运行吞吐，避免把 instrumentation overhead 误认为模拟器变慢。下一步仍应回到 managed-thread continue/receive 主瓶颈。

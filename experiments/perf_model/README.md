@@ -10,6 +10,10 @@ Run:
 python3 experiments/perf_model/run_perf_model.py --setups 1,4,8 --trials 1
 ```
 
+Use `--perf-counters off` for throughput comparisons. Detailed counters are
+useful for locating hot paths, but they add measurement overhead and should not
+be treated as the clean speed baseline.
+
 Outputs:
 
 - `perf-model.json`: machine-readable case results and summaries
