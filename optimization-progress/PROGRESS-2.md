@@ -444,3 +444,40 @@
   - 不做同 host 继续执行。
   - 不做 busy-poll 热循环。
 - 当前判断：这是符合主要矛盾的路线，但不是小补丁；下一步若继续，应先做“只支持 other-host overlap 的 async native reply 骨架”，并以 setup8 counters-on/off 和 determinism suite 作为硬 gate。
+
+## 2026-05-31 phase3 实现前置：拆分 native reply receive/finish
+
+- 当前目标不是制造一个假的小优化，而是为 async native reply 骨架创造可测试的接入点。
+- 本轮 shadow 改动：
+  - 在 `ManagedThread` 中新增 `NativeRunReply`，显式承载 shim reply event 和 receive 统计字段。
+  - 将原 `finish_continue_plugin_blocking()` 拆成两段：
+    - `receive_continue_plugin_reply_blocking()`：只负责等待/读取 `from_plugin` reply，并记录 try-ready/try-not-ready/post-try receive 时间。
+    - `finish_continue_plugin_with_reply()`：只负责重新获取 host shmem lock、同步 shim time、回到 `NativeRunPhase::Parked`、提交统计并返回 event。
+- 语义：同步路径保持不变；仍然在同一个调用中阻塞等待 reply，仍然在返回前重新持有 host shmem lock。
+- 为什么这一步必要：
+  - async 方案必须把 “开始 native run” 与 “收到 native reply 后 finalize” 分开。
+  - 如果不先拆这两个阶段，后续 `NativeReplyPending` 会在一个大函数里同时改锁、时间、统计和事件流，风险过高。
+- 验证：
+  - `cargo test --manifest-path src/Cargo.toml -p shadow-rs --lib host::managed_thread`: 编译通过，筛选下 0 个测试执行。
+  - `./setup build`: passed，仅有既有 warning。
+  - setup8 counters-off：`/tmp/tdt-nr-ref-off-s8`
+    - passed=true
+    - elapsed=12.80s
+    - simulated_seconds_per_wall_second=28.13x
+    - steady_simulated_seconds_per_wall_second=30.14x
+    - checkpoint=172.79ms
+    - restore=301.63ms
+  - setup8 counters-on：`/tmp/tdt-nr-ref-on-s8`
+    - passed=true
+    - steady_simulated_seconds_per_wall_second=31.43x
+    - managed continue calls=552053
+    - receive wall=12609.62ms
+    - try ready=229596
+    - try not ready=322454
+    - post-try receive wall=12532.67ms
+- 解释：
+  - 这一步不应提升性能；counters-off steady 低于上一轮 32.69x，按单次噪声处理。
+  - counters-on 证明统计语义没有被拆分破坏，并再次确认 native reply wait 仍是主瓶颈：worker body receive 占 59.9%，最慢 worker body receive 占 77.6%。
+- 下一步：
+  - 继续沿 `NativeReplyPending` 向上传播，但先处理 host lock 状态返回问题。
+  - 不进入 eventfd、不进入延迟调参、不做 busy-poll 热循环。
