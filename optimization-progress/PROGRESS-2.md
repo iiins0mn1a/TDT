@@ -329,3 +329,11 @@
 - 合成 CP/restore verifier：6 个 synthetic 场景全 PASS。
 - reference performance 使用默认 counters-off：setup1 steady=44.90x，setup4 steady=40.35x，setup8 steady=32.66x；checkpoint/restore median 分别为 setup1 150.20/89.17ms，setup4 117.05/210.35ms，setup8 148.66/364.90ms。
 - 结论：当前 NativeRunToken 等价重构与 phase guard 没有破坏既有功能和确定性；可以继续推进 `ManagedThreadReceive` / safepoint 原型，但不能跳过稳定顺序和 checkpoint guard。
+
+## 2026-05-31 13:58 - IPC empty guard 与 ready-bridge 审计
+
+- 本轮拒绝直接实现 `ManagedThreadReceive` busy-poll 原型：Einstein 子任务确认当前没有现成的 “shim 写回 channel -> scheduler ready、不占 worker、不按 OS 顺序消费” hook。`SelfContainedChannel::send()` 只会 futex wake 已经睡在 receive 的线程，不能通知 Shadow scheduler。
+- 结论：直接把 receive 半段变成 host-local task 会把 blocking receive 变成同模拟时间反复 try_receive 的忙等，不是性能优化。真正的 produce-consume 需要 Shadow-owned IPC ready bridge；watcher 只设置 ready bit/ready 集合，scheduler 再按 deterministic key drain。
+- 可保留代码动作：给 `SelfContainedChannel` 增加只读 `is_empty()`，给 `IPCData` 增加 `channels_are_empty()`，并在 `ManagedThread::assert_shadow_owned_safepoint()` 中要求 snapshot 时双向 IPC channel 都为空。这样把 `ipc_rebuild.rs` 的 Empty-channel 假设推进成运行时 guard。
+- 验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过；真实客户端 setup8 counters-off `/tmp/tdt-ipc-empty-guard-off-setup8-t1-20260531` 通过，steady=31.92x。
+- 下一步：若继续异步方向，需要先实现最小 ready bridge，而不是继续在 task 层忙等。候选机制包括：`SelfContainedChannel` 暴露 wait-ready-no-consume API + helper thread，或 IPC 增加 eventfd/notifier；无论哪种，ready 只能作为事实集合，消费顺序必须由 Shadow 稳定 key 控制。
