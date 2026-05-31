@@ -294,3 +294,14 @@
 - 验证：shadow release build 通过；setup8 三轮 counters-off 性能探针 `/tmp/tdt-affinity-fastpath-setup8-t3-20260531` 通过。
 - 结果：实验 steady=31.02x；同日 baseline `/tmp/tdt-main-perf-off-setup8-t3-20260531` steady=31.13x。变化为负且在噪声范围内。
 - 决策：撤销该 shadow 补丁，不进入实现候选。该点说明 resume 外围小开销不是当前可见主瓶颈，继续回到更大的同步 IPC/managed-thread 服务模型假设。撤销后已重新 build，当前 shadow 源码回到无 diff 状态，仅保留未跟踪运行残留 `src/test/signal/shadow.data/`。
+
+## 2026-05-31 13:38 - try-receive 诊断确认同步等待是真瓶颈
+
+- 根据 Popper 子任务建议，实现一个无语义变化的 counters-on 诊断补丁：`continue_plugin` send 后先尝试 `try_receive_assuming_single_consumer()`；如果未 ready，仍立刻走原来的 blocking receive。`SHADOW_TDT_PERF_COUNTERS=0` 时完全走旧路径。
+- TDT `experiments/perf_model/run_perf_model.py` 增加解析和渲染字段：try ready / try not ready / try receive wall / post-try receive wall，并在 per-exchange 表中展开。
+- 验证：`python3 -m py_compile experiments/perf_model/run_perf_model.py` 通过；`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；shadow `./setup build` 通过。
+- 当前分支 counters-on setup8 单轮 `/tmp/tdt-tryrecv-audit-setup8-t1-20260531` 通过。关键数据：continue_plugin calls=556099，try ready=230185，try not ready=325913，try wall=50.19ms，post-try receive wall=12648.53ms。
+- 主交换 `SyscallComplete -> Syscall`：calls=550430，try ready=229310，try not ready=321120，receive=12477.827ms，其中 post-try receive=12397.176ms。
+- 解释：这不是“消息其实已经 ready，但 receive 实现慢”的假瓶颈；约 59% 的 continue 往返在 send 后确实未 ready，绝大多数等待时间发生在 post-try blocking receive。produce-consume / NativeRunToken / safepoint 状态机方向值得继续，但必须按确定性顺序处理 ready token，不能按 OS ready 顺序消费。
+- counters-off setup8 单轮 `/tmp/tdt-tryrecv-off-setup8-t1-20260531` 通过，steady=32.01x，报告中 counters 为空，确认默认吞吐口径仍可用。
+- 下一步候选：先设计显式 `WaitingForShimReply`/`NativeRunToken` 的最小状态模型和 checkpoint 静止点规则；在真正异步之前，避免继续做外围微优化。

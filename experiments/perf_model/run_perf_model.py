@@ -128,6 +128,10 @@ MANAGED_THREAD_COUNTER_RE = re.compile(
     r"(?:continue_plugin_prepare_wall_ns=(?P<continue_plugin_prepare_wall_ns>[0-9]+) "
     r"continue_plugin_send_wall_ns=(?P<continue_plugin_send_wall_ns>[0-9]+) "
     r"continue_plugin_time_update_wall_ns=(?P<continue_plugin_time_update_wall_ns>[0-9]+) )?"
+    r"(?:(?:continue_plugin_try_ready_calls=(?P<continue_plugin_try_ready_calls>[0-9]+) "
+    r"continue_plugin_try_not_ready_calls=(?P<continue_plugin_try_not_ready_calls>[0-9]+) "
+    r"continue_plugin_try_receive_wall_ns=(?P<continue_plugin_try_receive_wall_ns>[0-9]+) "
+    r"continue_plugin_post_try_receive_wall_ns=(?P<continue_plugin_post_try_receive_wall_ns>[0-9]+) ))?"
     r"syscall_handler_calls=(?P<syscall_handler_calls>[0-9]+) "
     r"syscall_handler_wall_ns=(?P<syscall_handler_wall_ns>[0-9]+) "
     r"syscall_continue_calls=(?P<syscall_continue_calls>[0-9]+) "
@@ -139,6 +143,10 @@ CONTINUE_EXCHANGE_ITEM_RE = re.compile(
     r"calls=(?P<calls>[0-9]+):"
     r"wall_ms=(?P<wall_ms>[0-9.]+):"
     r"receive_ms=(?P<receive_ms>[0-9.]+)"
+    r"(?::try_ready=(?P<try_ready>[0-9]+):"
+    r"try_not_ready=(?P<try_not_ready>[0-9]+):"
+    r"try_ms=(?P<try_ms>[0-9.]+):"
+    r"post_try_receive_ms=(?P<post_try_receive_ms>[0-9.]+))?"
 )
 SYSCALL_TOP_ITEM_RE = re.compile(
     r"(?P<name>[^,(]+)\((?P<number>[0-9]+)\):"
@@ -506,6 +514,14 @@ def parse_continue_exchange_top(raw: str) -> list[dict[str, Any]]:
                 "calls": int(groups["calls"]),
                 "wall_ms": float(groups["wall_ms"]),
                 "receive_ms": float(groups["receive_ms"]),
+                "try_ready": int(groups["try_ready"]) if groups.get("try_ready") else None,
+                "try_not_ready": int(groups["try_not_ready"])
+                if groups.get("try_not_ready")
+                else None,
+                "try_ms": float(groups["try_ms"]) if groups.get("try_ms") else None,
+                "post_try_receive_ms": float(groups["post_try_receive_ms"])
+                if groups.get("post_try_receive_ms")
+                else None,
             }
         )
     return items
@@ -814,6 +830,18 @@ def summarize_case(case: dict[str, Any]) -> dict[str, Any]:
         "managed_continue_plugin_time_update_wall_ms": None
         if median_phase_value(managed_thread_stats, "continue_plugin_time_update_wall_ns") is None
         else median_phase_value(managed_thread_stats, "continue_plugin_time_update_wall_ns") / 1_000_000.0,
+        "managed_continue_plugin_try_ready_calls": median_phase_value(
+            managed_thread_stats, "continue_plugin_try_ready_calls"
+        ),
+        "managed_continue_plugin_try_not_ready_calls": median_phase_value(
+            managed_thread_stats, "continue_plugin_try_not_ready_calls"
+        ),
+        "managed_continue_plugin_try_receive_wall_ms": None
+        if median_phase_value(managed_thread_stats, "continue_plugin_try_receive_wall_ns") is None
+        else median_phase_value(managed_thread_stats, "continue_plugin_try_receive_wall_ns") / 1_000_000.0,
+        "managed_continue_plugin_post_try_receive_wall_ms": None
+        if median_phase_value(managed_thread_stats, "continue_plugin_post_try_receive_wall_ns") is None
+        else median_phase_value(managed_thread_stats, "continue_plugin_post_try_receive_wall_ns") / 1_000_000.0,
         "managed_syscall_handler_calls": median_phase_value(managed_thread_stats, "syscall_handler_calls"),
         "managed_syscall_handler_wall_ms": None
         if median_phase_value(managed_thread_stats, "syscall_handler_wall_ns") is None
@@ -1066,13 +1094,13 @@ def render_report(
             "",
             "## Managed Thread Wall Time",
             "",
-            "| Setup | continue_plugin calls | continue_plugin ms | receive ms | lock ms | prepare ms | send ms | time update ms | syscall handler calls | syscall handler ms | syscall continue calls | syscall continue ms |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Setup | continue_plugin calls | continue_plugin ms | receive ms | try ready | try not ready | try ms | post-try receive ms | lock ms | prepare ms | send ms | time update ms | syscall handler calls | syscall handler ms | syscall continue calls | syscall continue ms |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for item in summaries:
         lines.append(
-            "| {setup} | {cont_calls} | {cont_ms} | {recv_ms} | {lock_ms} | {prepare_ms} | {send_ms} | {time_update_ms} | {handler_calls} | {handler_ms} | {sys_cont_calls} | {sys_cont_ms} |".format(
+            "| {setup} | {cont_calls} | {cont_ms} | {recv_ms} | {try_ready} | {try_not_ready} | {try_ms} | {post_try_ms} | {lock_ms} | {prepare_ms} | {send_ms} | {time_update_ms} | {handler_calls} | {handler_ms} | {sys_cont_calls} | {sys_cont_ms} |".format(
                 setup=item["setup"],
                 cont_calls=""
                 if item.get("managed_continue_plugin_calls") is None
@@ -1083,6 +1111,18 @@ def render_report(
                 recv_ms=""
                 if item.get("managed_continue_plugin_receive_wall_ms") is None
                 else f"{item['managed_continue_plugin_receive_wall_ms']:.2f}",
+                try_ready=""
+                if item.get("managed_continue_plugin_try_ready_calls") is None
+                else f"{item['managed_continue_plugin_try_ready_calls']:.0f}",
+                try_not_ready=""
+                if item.get("managed_continue_plugin_try_not_ready_calls") is None
+                else f"{item['managed_continue_plugin_try_not_ready_calls']:.0f}",
+                try_ms=""
+                if item.get("managed_continue_plugin_try_receive_wall_ms") is None
+                else f"{item['managed_continue_plugin_try_receive_wall_ms']:.2f}",
+                post_try_ms=""
+                if item.get("managed_continue_plugin_post_try_receive_wall_ms") is None
+                else f"{item['managed_continue_plugin_post_try_receive_wall_ms']:.2f}",
                 lock_ms=""
                 if item.get("managed_continue_plugin_lock_wall_ms") is None
                 else f"{item['managed_continue_plugin_lock_wall_ms']:.2f}",
@@ -1114,8 +1154,8 @@ def render_report(
             "",
             "## Managed Continue Exchanges",
             "",
-            "| Setup | Rank | Sent | Received | Calls | Wall ms | Receive ms | Receive % |",
-            "| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: |",
+            "| Setup | Rank | Sent | Received | Calls | Wall ms | Receive ms | Receive % | try ready | try not ready | try ms | post-try receive ms |",
+            "| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for item in summaries:
@@ -1126,7 +1166,7 @@ def render_report(
                 else (exchange["receive_ms"] / exchange["wall_ms"]) * 100.0
             )
             lines.append(
-                "| {setup} | {rank} | {sent} | {received} | {calls} | {wall_ms:.3f} | {receive_ms:.3f} | {receive_pct:.1f} |".format(
+                "| {setup} | {rank} | {sent} | {received} | {calls} | {wall_ms:.3f} | {receive_ms:.3f} | {receive_pct:.1f} | {try_ready} | {try_not_ready} | {try_ms} | {post_try_ms} |".format(
                     setup=item["setup"],
                     rank=rank,
                     sent=exchange["sent"],
@@ -1135,6 +1175,14 @@ def render_report(
                     wall_ms=exchange["wall_ms"],
                     receive_ms=exchange["receive_ms"],
                     receive_pct=receive_pct,
+                    try_ready="" if exchange.get("try_ready") is None else exchange["try_ready"],
+                    try_not_ready=""
+                    if exchange.get("try_not_ready") is None
+                    else exchange["try_not_ready"],
+                    try_ms="" if exchange.get("try_ms") is None else f"{exchange['try_ms']:.3f}",
+                    post_try_ms=""
+                    if exchange.get("post_try_receive_ms") is None
+                    else f"{exchange['post_try_receive_ms']:.3f}",
                 )
             )
     lines.extend(
