@@ -96,3 +96,44 @@
 - 因此下一条候选不是“直接 helper 操作 host”，而是两种更小的方向：
   1. 窗口级批量 drain：pending 后先让 worker 处理其它 host，window/scope 末尾集中完成 pending reply。
   2. 新增确定性 readiness bridge：helper 只等待 futex ready 并提交 token，manager 统一排序后投递 continuation。
+
+## 2026-05-31 新分支：native reply batch drain/readiness bridge
+
+- 从当前稳定分支切出 `explore/native-reply-batch-drain-20260531`，TDT 与 `deps/shadow` 同名。
+- 本阶段只探索 native reply 等待解耦，不展开 runahead、网络延迟、应用层配置或其它调参路线。
+- 主矛盾：setup8 中 `continue_receive` 占 worker body 约 `59%`，最慢 worker 可达 `79%`；但同一 simulated time retry 已被证明会忙轮询。
+- 当前可接受方案必须满足三条：
+  1. 不改变应用层配置和模拟语义。
+  2. checkpoint 前能回到 `Parked + IPC empty + current_event updated` 静止点。
+  3. 不重放 local task，尤其不能重复 `StartApplication`。
+- 下一步先读代码确定最小插入点：是否能在一个 scheduler scope/window 末尾按确定性顺序 drain pending native reply；如果插入点不成立，再考虑小型 readiness bridge。
+
+## 2026-05-31 batch drain 最小原型
+
+- subagent 与本地审计结论一致：可试插入点在当前 scheduler scope/window 内 host 扫描之后、`min_next_event_time` 与 run-control/checkpoint 边界之前。
+- 该插入点比 same-time retry event 更安全，因为不会重放 `TaskRef`，特别是不会重放 `StartApplication` closure。
+- 原型增加 `SHADOW_TDT_BATCH_DRAIN_NATIVE_REPLY=1` 开关；默认关闭时继续同步 `continue_plugin`，不改变默认语义。
+- 原型思路：`ManagedThread` 发送 shim event 后先 `try_receive`，如果 reply 未就绪则保存 `NativeRunToken` 并返回 `NativeReplyPending`；`Host` 记录 `(pid, tid)`；worker 扫完 hosts 后 drain pending reply，再调用 `Host::resume(pid, tid)` 继续原 thread state machine。
+- 这个原型仍不引入 helper thread，因此不涉及外部 readiness 排序；它只测试“把阻塞点推迟到本 worker host 扫描尾部”是否能减少关键路径等待。
+- 编译验证：
+  - `cargo test --manifest-path src/Cargo.toml -p shadow-rs --lib host::managed_thread` 通过；0 个测试实际执行，166 filtered out。
+  - `cargo fmt` 在 `src/main` 成功。
+  - `./setup build` 通过，生成 release shadow。
+
+### batch drain opt-in 失败记录
+
+- 第一次 setup8 opt-in：`/tmp/tdt-batch-drain-on-s8`，快速失败，`Host::unlock_shmem()` 断言。原因是 `StartApplication` 仍使用旧 `TaskRef::new_with_descriptor`，吞掉 `host.resume()` 的 `NativeReplyPending` 返回。
+- 补齐 `StartApplication` pending 返回后，setup1：`/tmp/tdt-batch-drain-on-s1-fix1` 不再 panic，但 Shadow 在约 4 秒模拟时间早停，应用仍 running。诊断显示 pending 被记录，但没有被 drain。
+- 进一步定位：同一个 `HostIter` 第一轮遍历会把 host 从当前队列转移到下一队列，第二轮 `for_each_host` 访问不到 host；这是 scheduler API 使用错位。
+- 改成第一个 scheduler scope 完成后启动第二个 scope drain，setup1：`/tmp/tdt-batch-drain-on-s1-scope2`。这次 drain 发生了，但 geth 在同一个 simulated timestamp 反复 `pending recorded -> pending finish`，本质上又变成同一 simulated time busy loop，最终触发线程状态 unwrap。
+- 结论：没有外部 readiness 通知时，窗口尾部 batch drain 也不能成立；它只是把 busy polling 从 event retry 移到了 drain loop。该原型判负，不提交 shadow 代码。
+- 保留 insight：真正可继续的路线必须是 readiness bridge，也就是让等待发生在不占用 scheduler critical path 的 helper/通知层，scheduler 只在 reply ready 后按确定性顺序恢复 host。
+
+### 回退后稳定性验证
+
+- 已反向应用本轮失败原型和 `cargo fmt` 造成的所有 shadow tracked diff；shadow tracked clean，仅保留既有 untracked `src/test/signal/shadow.data/`。
+- 重新 `./setup build`，确保 binary 回到稳定源码。
+- 默认 setup8 guard：`/tmp/tdt-after-batch-revert-s8`，`passed=true`。
+- 性能点：elapsed `12.40s`，sim/wall `29.04x`，steady `31.33x`，checkpoint `194.36 ms`，restore `332.82 ms`。
+- 语义检查点：post-restore 后 8 个 beacon 均达到 `Synced new block=26` / `Finished applying state transition=26`，geth `Chain head was updated=26`，说明测试网继续推进。
+- 方向调整：本分支继续只考虑 readiness bridge；不再尝试没有 readiness 的 same-time retry 或 batch drain。
