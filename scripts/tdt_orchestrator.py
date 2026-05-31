@@ -42,8 +42,8 @@ def prepare_runtime_layout(work_dir: Path) -> None:
 def copy_seed_inputs(config: TdtConfig) -> None:
     network_dir = config.work_dir / "network"
     network_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config.assets_dir / "config.yml", network_dir / "config.yml")
-    shutil.copy2(config.assets_dir / "genesis.json", network_dir / "genesis.json")
+    shutil.copy2(config.chain_config_file, network_dir / "config.yml")
+    shutil.copy2(config.genesis_json_file, network_dir / "genesis.json")
 
 
 def reset_peer_file(work_dir: Path) -> None:
@@ -151,6 +151,8 @@ def generate_consensus_genesis(config: TdtConfig) -> None:
         f"--output-ssz={config.work_dir / 'network' / 'genesis.ssz'}",
         f"--geth-genesis-json-out={config.work_dir / 'network' / 'genesis.json'}",
     ]
+    if config.simulation.use_current_genesis_time:
+        cmd.insert(4, f"--genesis-time={int(time.time())}")
     run_command(cmd, cwd=config.root_dir)
 
 

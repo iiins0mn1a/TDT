@@ -1,0 +1,49 @@
+CONFIG_NAME: interop
+PRESET_BASE: interop
+
+# Genesis
+MIN_GENESIS_ACTIVE_VALIDATOR_COUNT: 16
+MIN_GENESIS_TIME: 0
+GENESIS_DELAY: 0
+GENESIS_FORK_VERSION: 0x20000089
+
+# Altair
+ALTAIR_FORK_EPOCH: 0
+ALTAIR_FORK_VERSION: 0x20000090
+
+# Merge
+BELLATRIX_FORK_EPOCH: 0
+BELLATRIX_FORK_VERSION: 0x20000091
+TERMINAL_TOTAL_DIFFICULTY: 0
+
+# Capella
+CAPELLA_FORK_EPOCH: 0
+CAPELLA_FORK_VERSION: 0x20000092
+MAX_WITHDRAWALS_PER_PAYLOAD: 16
+
+# Deneb
+DENEB_FORK_VERSION: 0x20000093
+DENEB_FORK_EPOCH: 0
+
+# Later forks are intentionally kept out of this Deneb testnet, but their
+# versions must be explicit with Prysm v7 to avoid colliding with built-in
+# mainnet fork-version schedules during custom config registration.
+ELECTRA_FORK_VERSION: 0x20000094
+ELECTRA_FORK_EPOCH: 18446744073709551615
+FULU_FORK_VERSION: 0x20000095
+FULU_FORK_EPOCH: 18446744073709551615
+GLOAS_FORK_VERSION: 0x20000096
+GLOAS_FORK_EPOCH: 18446744073709551615
+
+# Time parameters
+SECONDS_PER_SLOT: 12
+SLOTS_PER_EPOCH: 32
+
+# Deposit contract
+DEPOSIT_CONTRACT_ADDRESS: 0x4242424242424242424242424242424242424242
+
+# Keep the custom network's blob schedule local to the Deneb testnet instead of
+# inheriting mainnet BPO epochs from Prysm's default config base.
+BLOB_SCHEDULE:
+  - EPOCH: 0
+    MAX_BLOBS_PER_BLOCK: 6

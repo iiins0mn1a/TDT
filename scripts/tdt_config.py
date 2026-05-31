@@ -21,6 +21,9 @@ class SimulationConfig:
     interactive: bool = True
     edit_shadow_yaml_before_run: bool = True
     clean_runtime_before_prepare: bool = True
+    chain_config: str = ""
+    genesis_json: str = ""
+    use_current_genesis_time: bool = False
     work_dir: str = "runtime"
     duration_seconds: int = 1800
     shadow_parallelism: int | None = 6
@@ -75,6 +78,18 @@ class TdtConfig:
     @property
     def assets_dir(self) -> Path:
         return self.root_dir / "assets"
+
+    @property
+    def chain_config_file(self) -> Path:
+        if self.simulation.chain_config:
+            return _resolve_path(self.root_dir, self.simulation.chain_config)
+        return self.assets_dir / "config.yml"
+
+    @property
+    def genesis_json_file(self) -> Path:
+        if self.simulation.genesis_json:
+            return _resolve_path(self.root_dir, self.simulation.genesis_json)
+        return self.assets_dir / "genesis.json"
 
     @property
     def work_dir(self) -> Path:
@@ -137,6 +152,8 @@ class TdtConfig:
             "cluster": asdict(self.cluster),
             "simulation": {
                 **asdict(self.simulation),
+                "chain_config_file": str(self.chain_config_file),
+                "genesis_json_file": str(self.genesis_json_file),
                 "work_dir": str(self.work_dir),
             },
             "checkpoint_restore": asdict(self.checkpoint_restore),

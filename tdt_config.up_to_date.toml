@@ -1,0 +1,43 @@
+[cluster]
+shared_geth_nodes = 1
+beacon_nodes = 4
+validators_total = 16
+
+[simulation]
+default_mode = "smoke"
+interactive = true
+edit_shadow_yaml_before_run = true
+clean_runtime_before_prepare = true
+chain_config = "assets/config.up_to_date.yml"
+genesis_json = "assets/genesis.up_to_date.json"
+use_current_genesis_time = true
+work_dir = "/tmp/tdt-up-to-date-runtime"
+duration_seconds = 1800
+shadow_parallelism = 6
+shadow_heartbeat_interval = "1 sec"
+shadow_use_worker_spinning = true
+shadow_use_cpu_pinning = true
+network_latency = "100 ms"
+packet_route_cache = true
+fast_file_sync = true
+native_preemption_enabled = false
+native_preemption_native_interval = "100 ms"
+native_preemption_sim_interval = "10 ms"
+
+[checkpoint_restore]
+checkpoint_label = "tdt_real_clients_uptodate"
+warmup_seconds = 600
+post_checkpoint_seconds = 120
+post_restore_step_seconds = 60
+post_restore_steps = 6
+checkpoint_criu_jobs = 32
+restore_protocol_mode = "deterministic_v2"
+managed_external_paths = ["network", "beacon_peers.txt"]
+
+[binaries]
+shadow = "deps/shadow/build/src/main/shadow"
+prysmctl = "deps/prysm-v7.1.4/dist/prysmctl-v7.1.4-linux-amd64"
+criu = "/home/ins0/workspace-for-agent/user_data/task/criu_demo/criu-src/criu/criu"
+geth = "deps/go-ethereum-v1.17.3/build/bin/geth"
+beacon = "deps/prysm-v7.1.4/dist/beacon-chain-v7.1.4-linux-amd64"
+validator = "deps/prysm-v7.1.4/dist/validator-v7.1.4-linux-amd64"

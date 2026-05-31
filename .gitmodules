@@ -10,3 +10,9 @@
 	path = deps/go-ethereum
 	url = git@github.com:ethereum/go-ethereum.git
 	branch = master
+[submodule "deps/go-ethereum-v1.17.3"]
+	path = deps/go-ethereum-v1.17.3
+	url = https://github.com/ethereum/go-ethereum.git
+[submodule "deps/prysm-v7.1.4"]
+	path = deps/prysm-v7.1.4
+	url = https://github.com/OffchainLabs/prysm.git

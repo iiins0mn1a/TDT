@@ -151,6 +151,9 @@ def main() -> None:
     - path: {geth_bin}
       args: --networkid=32382 --http --http.api=eth,net,web3 --http.addr=0.0.0.0 --http.corsdomain=\"*\" --http.port=8000 --port=8400 --metrics.port=8300 --ws --ws.api=eth,net,web3 --ws.addr=0.0.0.0 --ws.origins=\"*\" --ws.port=8100 --authrpc.vhosts=\"*\" --authrpc.addr=0.0.0.0 --authrpc.jwtsecret={runtime_dir}/network/node-1/execution/jwtsecret --authrpc.port=8200 --datadir={runtime_dir}/network/node-1/execution --password={runtime_dir}/network/node-1/geth_password.txt --identity=node-0 --maxpendpeers=0 --verbosity=3 --syncmode=full --ipcdisable --nodiscover --maxpeers=0 --nat=none
       start_time: {time_offset + 1}
+      shutdown_time: {stop_time_seconds - 1}
+      shutdown_signal: SIGKILL
+      expected_final_state: {{signaled: SIGKILL}}
 """
 
     def beacon_host(idx: int) -> str:
@@ -198,6 +201,9 @@ def main() -> None:
       environment:
         SPEC_LOG_NODE: \"node-{idx}\"
       start_time: {validator_start}
+      shutdown_time: {stop_time_seconds - 1}
+      shutdown_signal: SIGKILL
+      expected_final_state: {{signaled: SIGKILL}}
 """
 
     base_per_node = args.validators // args.nodes
