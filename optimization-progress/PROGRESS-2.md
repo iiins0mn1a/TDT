@@ -274,3 +274,13 @@
 - 验证3：完整 suite 第一轮 `/tmp/tdt-suite-default-off-full-20260531` 出现 setup1 determinism 和 synthetic-eth-multiproc 偶发失败；两个失败单独重跑均通过：`/tmp/tdt-rerun-setup1-det-suitecfg-20260531` passed=true，`/tmp/tdt-rerun-eth-multiproc-20260531` PASS。
 - 验证4：完整 suite 第二轮 `/tmp/tdt-suite-default-off-full-r2-20260531` 输出 YES；真实客户端 setup1/4/8 determinism 全 PASS，6 个 synthetic verifier 全 PASS，performance PASS 且 counters=off。性能：setup1 steady=44.85x，setup4 steady=40.31x，setup8 steady=34.34x。
 - 结论：这是测量口径修正，不是 Shadow 内部加速；它让后续 suite 性能数字更接近真实运行吞吐，避免把 instrumentation overhead 误认为模拟器变慢。下一步仍应回到 managed-thread continue/receive 主瓶颈。
+
+## 2026-05-31 managed-thread IPC候选试错
+
+- 主矛盾：setup8 仍主要卡在 managed-thread `SyscallComplete -> Syscall` 同步 continue/receive；本轮只试不改应用层语义的 IPC 层候选。
+- 候选A：把 `SelfContainedChannel::send` / `receive_assuming_single_consumer` 的 `fetch_update` 改成显式 `compare_exchange` 快路径。验证：`cargo test --manifest-path src/Cargo.toml -p vasi-sync --test scchannel-tests` 通过；microbench patch 后 pinned≈1.459us，撤回后 baseline pinned≈1.433us，patch 反而慢约1.8%，已撤销。
+- 候选B：给真实 `IPCData` 加 `#[repr(C, align(128))]`，对齐两个 channel 布局。验证：`./setup build` 通过；setup8 三轮 counters-off `/tmp/tdt-ipc-align-setup8-t3-20260531` steady=31.134x，对比今天 baseline `/tmp/tdt-main-perf-off-setup8-t3-20260531` steady=31.127x，差异约0.02%，无实际收益，已撤销。
+- 候选C：在 channel receive 进入 futex 前短暂 spin。验证：`scchannel-tests` 通过；microbench 非 pinned 从约48us降到约3us，但 pinned 从约1.43us退化到约3.85us。TDT 默认启用 CPU pinning，因此该方向对目标 workload 高风险，已撤销，未进入 TDT suite。
+- 收尾：Shadow 源码保持无实验 diff，仅重新 `./setup build` 回到当前 baseline binary；未跟踪残留仍是 `src/test/signal/shadow.data/`。
+- 结论：低层 channel 原子/布局/spin 这三条低风险 IPC 微优化没有可采纳收益。下一步不能继续微调 channel 参数，应回到更高层的 managed-thread continue 语义压缩或 safepoint 模型。
+- Avicenna 只读报告补充：perf report 还应显式标注 counters on/off、隐藏 counters-off 空诊断表、区分 correctness verdict 与 performance-only verdict；这是报告层清理，不是实际加速候选。
